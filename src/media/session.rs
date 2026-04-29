@@ -2,6 +2,7 @@
 
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame};
 use super::sdp::{generate_sdp_answer, SdpOffer};
+use crate::codec::{create_codec, Codec};
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -20,6 +21,8 @@ pub struct MediaSession {
     peer_addr: SocketAddr,
     /// Selected payload type
     payload_type: u8,
+    /// Codec name (for dynamic payload types)
+    codec_name: String,
     /// Session ID for SDP
     session_id: u64,
     /// Cancellation token
@@ -56,6 +59,7 @@ impl MediaSession {
             rtp_socket,
             peer_addr,
             payload_type: offer.payload_type,
+            codec_name: offer.codec_name.clone(),
             session_id,
             cancel_token,
         })
@@ -68,7 +72,8 @@ impl MediaSession {
 
     /// Start the media session and return audio channels
     ///
-    /// Returns (audio_in_receiver, audio_out_sender) for the audio handler to use
+    /// Returns (audio_in_receiver, audio_out_sender) for the audio handler to use.
+    /// Audio frames contain decoded PCM samples at 48kHz.
     pub async fn start(
         self,
     ) -> (
@@ -82,31 +87,63 @@ impl MediaSession {
         let rtp_socket = std::sync::Arc::new(self.rtp_socket);
         let cancel_token = self.cancel_token.clone();
 
+        // Create codec for receiving (decoding)
+        let recv_codec = create_codec(self.payload_type, Some(&self.codec_name));
+        if recv_codec.is_none() {
+            warn!(
+                "No codec for payload type {} ({}), using passthrough",
+                self.payload_type, self.codec_name
+            );
+        }
+
+        // Create codec for sending (encoding)
+        let send_codec = create_codec(self.payload_type, Some(&self.codec_name));
+
         // Spawn RTP receive task
         let recv_socket = rtp_socket.clone();
         let recv_cancel = cancel_token.clone();
         let recv_peer = self.peer_addr;
+        let recv_payload_type = self.payload_type;
         tokio::spawn(async move {
-            Self::rtp_receive_task(recv_socket, audio_in_tx, recv_cancel, recv_peer).await;
+            Self::rtp_receive_task(
+                recv_socket,
+                audio_in_tx,
+                recv_cancel,
+                recv_peer,
+                recv_codec,
+                recv_payload_type,
+            )
+            .await;
         });
 
         // Spawn RTP send task
         let send_socket = rtp_socket;
         let send_cancel = cancel_token;
         let send_peer = self.peer_addr;
+        let send_payload_type = self.payload_type;
         tokio::spawn(async move {
-            Self::rtp_send_task(send_socket, audio_out_rx, send_cancel, send_peer).await;
+            Self::rtp_send_task(
+                send_socket,
+                audio_out_rx,
+                send_cancel,
+                send_peer,
+                send_codec,
+                send_payload_type,
+            )
+            .await;
         });
 
         (audio_in_rx, audio_out_tx)
     }
 
-    /// RTP receive task - receives RTP packets and sends AudioFrames to the channel
+    /// RTP receive task - receives RTP packets, decodes them, and sends AudioFrames to the channel
     async fn rtp_receive_task(
         socket: std::sync::Arc<UdpSocket>,
         audio_tx: mpsc::UnboundedSender<AudioFrame>,
         cancel_token: CancellationToken,
         _expected_peer: SocketAddr,
+        mut codec: Option<Box<dyn Codec>>,
+        default_payload_type: u8,
     ) {
         let mut buf = vec![0u8; 2048];
         let mut packet_count = 0u64;
@@ -128,16 +165,34 @@ impl MediaSession {
                                 "Received RTP packet"
                             );
 
-                            if let Some(frame) = parse_rtp_packet(&buf[..len]) {
+                            if let Some(raw) = parse_rtp_packet(&buf[..len]) {
                                 packet_count += 1;
                                 if packet_count % 500 == 1 {
                                     debug!(
                                         count = packet_count,
-                                        seq = frame.sequence,
-                                        ts = frame.timestamp,
+                                        seq = raw.sequence,
+                                        ts = raw.timestamp,
+                                        pt = raw.payload_type,
                                         "RTP receive progress"
                                     );
                                 }
+
+                                // Decode the payload using codec
+                                let samples = if let Some(ref mut c) = codec {
+                                    c.decode(&raw.payload)
+                                } else {
+                                    // Passthrough: interpret bytes as samples (for testing)
+                                    raw.payload.iter().map(|&b| (b as i16 - 128) * 256).collect()
+                                };
+
+                                let frame = AudioFrame {
+                                    samples,
+                                    timestamp: raw.timestamp,
+                                    sequence: raw.sequence,
+                                    ssrc: raw.ssrc,
+                                    payload_type: raw.payload_type,
+                                };
+
                                 if audio_tx.send(frame).is_err() {
                                     debug!("Audio channel closed, stopping receive task");
                                     break;
@@ -154,14 +209,18 @@ impl MediaSession {
                 }
             }
         }
+
+        let _ = default_payload_type; // Silence unused warning
     }
 
-    /// RTP send task - receives AudioFrames from the channel and sends RTP packets
+    /// RTP send task - receives AudioFrames from the channel, encodes them, and sends RTP packets
     async fn rtp_send_task(
         socket: std::sync::Arc<UdpSocket>,
         mut audio_rx: mpsc::UnboundedReceiver<AudioFrame>,
         cancel_token: CancellationToken,
         peer_addr: SocketAddr,
+        mut codec: Option<Box<dyn Codec>>,
+        default_payload_type: u8,
     ) {
         let mut packet_count = 0u64;
 
@@ -174,7 +233,27 @@ impl MediaSession {
                 frame = audio_rx.recv() => {
                     match frame {
                         Some(frame) => {
-                            let packet = build_rtp_packet(&frame);
+                            // Encode the samples using codec
+                            let payload = if let Some(ref mut c) = codec {
+                                c.encode(&frame.samples)
+                            } else {
+                                // Passthrough: convert samples back to bytes (for testing)
+                                frame.samples.iter().map(|&s| ((s / 256) + 128) as u8).collect()
+                            };
+
+                            // Skip empty payloads (codec error)
+                            if payload.is_empty() {
+                                continue;
+                            }
+
+                            let packet = build_rtp_packet(
+                                &payload,
+                                frame.timestamp,
+                                frame.sequence,
+                                frame.ssrc,
+                                frame.payload_type,
+                            );
+
                             match socket.send_to(&packet, peer_addr).await {
                                 Ok(_) => {
                                     packet_count += 1;
@@ -202,6 +281,8 @@ impl MediaSession {
                 }
             }
         }
+
+        let _ = default_payload_type; // Silence unused warning
     }
 }
 

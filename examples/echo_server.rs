@@ -81,7 +81,7 @@ impl AudioHandler for EchoHandler {
                             trace!(
                                 seq = frame.sequence,
                                 ts = frame.timestamp,
-                                len = frame.payload.len(),
+                                samples = frame.samples.len(),
                                 "Echoing frame"
                             );
 
@@ -151,9 +151,9 @@ mod tests {
             handler.process(in_rx, out_tx, cancel_clone).await;
         });
 
-        // Send a test frame
+        // Send a test frame (960 samples at 48kHz = 20ms)
         let frame = AudioFrame {
-            payload: vec![0x55; 160],
+            samples: vec![100; 960],
             timestamp: 160,
             sequence: 1,
             ssrc: 12345,
@@ -163,7 +163,7 @@ mod tests {
 
         // Receive the echoed frame
         let echoed = out_rx.recv().await.unwrap();
-        assert_eq!(echoed.payload, frame.payload);
+        assert_eq!(echoed.samples, frame.samples);
         assert_eq!(echoed.sequence, frame.sequence);
         assert_eq!(echoed.timestamp, frame.timestamp);
 
