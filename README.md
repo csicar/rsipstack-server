@@ -1,20 +1,21 @@
-# SIP Echo Server
+# rsipstack-server
 
-A SIP server built with Rust that accepts all incoming calls and echoes audio back to the caller. Useful for testing VoIP clients, network connectivity, and audio quality.
+A generic VoIP server library built with Rust using [rsipstack](https://crates.io/crates/rsipstack). Define custom audio processing via an actor-style interface with channels.
 
 ## Features
 
-- **SIP Protocol Support**: Full SIP call handling via [rsipstack](https://crates.io/crates/rsipstack)
+- **SIP Protocol Support**: Full SIP call handling via rsipstack
 - **G.711 Codec Support**: PCMU (payload type 0) and PCMA (payload type 8)
-- **Audio Echo**: Echoes received RTP audio back to the caller in real-time
+- **Actor-Style Audio Interface**: Receive/send audio via tokio channels
+- **Pluggable Audio Handlers**: Implement the `AudioHandler` trait for custom processing
 - **Concurrent Calls**: Handles multiple simultaneous calls
-- **NAT Traversal**: Optional external IP configuration for NAT environments
+- **NAT Traversal**: Optional external IP configuration
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      SIP Echo Server                        │
+│                       SIP Server                            │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
 │  │ SIP Endpoint │───▶│ Dialog Layer │───▶│ Call Handler │   │
@@ -36,134 +37,72 @@ A SIP server built with Rust that accepts all incoming calls and echoes audio ba
 │                           └──────────┬───────────┘          │
 │                                      │                      │
 │                              ┌───────▼───────┐              │
-│                              │  EchoHandler  │              │
+│                              │ AudioHandler  │              │
+│                              │ (your impl)   │              │
 │                              └───────────────┘              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Components
-
-| Component | Description |
-|-----------|-------------|
-| **SIP Endpoint** | Handles UDP transport and SIP message parsing |
-| **Dialog Layer** | Manages SIP dialogs (call sessions) and state transitions |
-| **Call Handler** | Processes INVITE requests, negotiates SDP, sets up media |
-| **Media Session** | Manages RTP sockets and audio frame channels |
-| **EchoHandler** | Receives audio frames and sends them back (echo effect) |
-
-### Call Flow
-
-```
-Caller                          Echo Server
-  │                                  │
-  │  INVITE (SDP offer)              │
-  │─────────────────────────────────▶│
-  │                                  │ Parse SDP, allocate RTP port
-  │              100 Trying          │
-  │◀─────────────────────────────────│
-  │              180 Ringing         │
-  │◀─────────────────────────────────│
-  │              200 OK (SDP answer) │
-  │◀─────────────────────────────────│
-  │  ACK                             │
-  │─────────────────────────────────▶│
-  │                                  │
-  │   location RTP location─────────────────────▶│ Echo audio back
-  │◀─────────────────────────────────│
-  │                                  │
-  │  BYE                             │
-  │─────────────────────────────────▶│
-  │              200 OK              │
-  │◀─────────────────────────────────│
-```
-
-## Building
-
-```bash
-# Development build
-cargo build
-
-# Release build (optimized)
-cargo build --release
-```
-
 ## Usage
 
-```bash
-# Run with default settings (port 5060, RTP starting at 10000)
-cargo run --release
+Add to your `Cargo.toml`:
 
-# Custom SIP port
-cargo run --release -- --port 5080
-
-# With external IP for NAT traversal
-cargo run --release -- --external-ip 203.0.113.1
-
-# Full options
-cargo run --release -- \
-    --port 5060 \
-    --bind 0.0.0.0 \
-    --external-ip 203.0.113.1 \
-    --rtp-start-port 20000 \
-    --log-level debug
+```toml
+[dependencies]
+rsipstack-server = "0.1"
 ```
 
-### Command-line Options
+### Basic Example
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--port` | 5060 | SIP listening port |
-| `--bind` | auto | Bind address (defaults to first non-loopback interface) |
-| `--external-ip` | none | External IP for NAT traversal |
-| `--rtp-start-port` | 10000 | Starting port for RTP media (even number) |
-| `--log-level` | info | Log level: trace, debug, info, warn, error |
+```rust
+use rsipstack_server::{
+    async_trait, mpsc, AudioFrame, AudioHandler,
+    CancellationToken, ServerConfig, SipServer
+};
 
-## Testing
+// Define your audio handler
+struct EchoHandler;
 
-### With sipp
+#[async_trait]
+impl AudioHandler for EchoHandler {
+    async fn process(
+        &self,
+        mut audio_in: mpsc::UnboundedReceiver<AudioFrame>,
+        audio_out: mpsc::UnboundedSender<AudioFrame>,
+        cancel_token: CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => break,
+                frame = audio_in.recv() => {
+                    match frame {
+                        Some(f) => { let _ = audio_out.send(f); }
+                        None => break,
+                    }
+                }
+            }
+        }
+    }
+}
 
-```bash
-# Basic UAC test (single call)
-sipp -sn uac <server-ip>:5060 -m 1
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let config = ServerConfig {
+        port: 5060,
+        rtp_start_port: 10000,
+        ..Default::default()
+    };
 
-# Multiple calls
-sipp -sn uac <server-ip>:5060 -m 10 -r 1 -l 1
-
-# With longer call duration (5 seconds)
-sipp -sn uac <server-ip>:5060 -m 1 -d 5000
+    // Pass a factory closure that creates handlers for each call
+    let server = SipServer::new(config, || EchoHandler).await?;
+    server.run().await?;
+    Ok(())
+}
 ```
 
-### With a SIP softphone
+### AudioHandler Trait
 
-1. Configure your softphone to register (optional) or direct call
-2. Call `sip:echo@<server-ip>:5060`
-3. Speak into the microphone - you should hear your voice echoed back
-
-## Project Structure
-
-```
-rsipstack-server/
-├── Cargo.toml
-├── src/
-│   ├── main.rs           # Entry point, CLI argument parsing
-│   ├── server.rs         # SIP server setup and request routing
-│   ├── call_handler.rs   # INVITE handling, media session setup
-│   ├── media/
-│   │   ├── mod.rs
-│   │   ├── session.rs    # RTP socket management, audio channels
-│   │   ├── rtp.rs        # RTP packet parsing and building
-│   │   └── sdp.rs        # SDP offer/answer generation
-│   └── audio/
-│       ├── mod.rs
-│       ├── handler.rs    # AudioHandler trait definition
-│       └── echo.rs       # Echo implementation
-└── test/
-    └── uac_pcap.xml      # sipp test scenario
-```
-
-## Extending
-
-The `AudioHandler` trait allows implementing custom audio processing:
+The `AudioHandler` trait is the core interface for custom audio processing:
 
 ```rust
 #[async_trait]
@@ -177,18 +116,79 @@ pub trait AudioHandler: Send + Sync {
 }
 ```
 
-Example use cases:
+- `audio_in`: Receives `AudioFrame`s from the remote peer
+- `audio_out`: Send `AudioFrame`s to the remote peer
+- `cancel_token`: Signals when the call ends
+
+### AudioFrame
+
+```rust
+pub struct AudioFrame {
+    pub payload: Vec<u8>,      // Raw audio data
+    pub timestamp: u32,        // RTP timestamp
+    pub sequence: u16,         // RTP sequence number
+    pub ssrc: u32,             // Synchronization source
+    pub payload_type: u8,      // Codec (0=PCMU, 8=PCMA)
+}
+```
+
+## Examples
+
+### Echo Server
+
+A complete echo server example is included:
+
+```bash
+cargo run --example echo_server -- --port 5060 --rtp-start-port 10000
+```
+
+### Testing with sipp
+
+```bash
+sipp -sn uac <server-ip>:5060 -m 1
+```
+
+### Testing with a SIP softphone
+
+1. Configure your softphone for direct calling (no registration)
+2. Call `sip:server@<server-ip>:5060`
+3. The server will process audio according to your handler
+
+## Configuration
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `port` | 5060 | SIP listening port |
+| `bind_addr` | auto | Bind address (defaults to first non-loopback interface) |
+| `external_ip` | none | External IP for NAT traversal |
+| `rtp_start_port` | 10000 | Starting port for RTP media (even number) |
+
+## Project Structure
+
+```
+rsipstack-server/
+├── src/
+│   ├── lib.rs            # Library entry point, public API
+│   ├── server.rs         # SIP server setup and request routing
+│   ├── call_handler.rs   # INVITE handling, media session setup
+│   ├── media/
+│   │   ├── session.rs    # RTP socket management, audio channels
+│   │   ├── rtp.rs        # RTP packet parsing and building
+│   │   └── sdp.rs        # SDP offer/answer generation
+│   └── audio/
+│       └── handler.rs    # AudioHandler trait definition
+└── examples/
+    └── echo_server.rs    # Echo server example
+```
+
+## Use Cases
+
+- Audio echo/loopback testing
 - Audio recording
 - Text-to-speech playback
 - Audio mixing/conferencing
 - Voice activity detection
-
-## Dependencies
-
-- [rsipstack](https://crates.io/crates/rsipstack) - SIP protocol stack
-- [tokio](https://crates.io/crates/tokio) - Async runtime
-- [rtp-rs](https://crates.io/crates/rtp-rs) - RTP packet handling
-- [sdp-rs](https://crates.io/crates/sdp-rs) - SDP parsing
+- AI voice assistants
 
 ## License
 

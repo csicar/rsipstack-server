@@ -2,17 +2,29 @@
 name = "rsipstack-server"
 version = "0.1.0"
 edition = "2021"
+description = "A generic VoIP server library built on rsipstack"
+license = "MIT"
+
+[lib]
+name = "rsipstack_server"
+path = "src/lib.rs"
+
+[[example]]
+name = "echo_server"
+path = "examples/echo_server.rs"
 
 [dependencies]
 rsipstack = "0.5"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["full"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap = { version = "4", features = ["derive"] }
 sdp-rs = "0.2"
 rtp-rs = "0.6"
 async-trait = "0.1"
 get_if_addrs = "0.5"
 rand = "0.8"
 anyhow = "1.0"
+
+[dev-dependencies]
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
