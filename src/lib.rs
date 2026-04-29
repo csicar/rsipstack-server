@@ -47,6 +47,7 @@
 
 mod audio;
 mod call_handler;
+pub mod codec;
 mod media;
 mod server;
 
