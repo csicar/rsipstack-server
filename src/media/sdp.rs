@@ -44,6 +44,7 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
         .unwrap_or(0); // Default to PCMU
 
     // Determine codec name from payload type
+    // Static payload types (0-95) have fixed meanings, dynamic types (96-127) need rtpmap lookup
     let codec_name = match payload_type {
         0 => "PCMU".to_string(),
         8 => "PCMA".to_string(),
@@ -77,14 +78,16 @@ pub fn generate_sdp_answer(
     session_id: u64,
     _payload_type: u8,
 ) -> String {
-    // Generate SDP with both PCMU (0) and PCMA (8) support
+    // Generate SDP with Opus, PCMU (0), and PCMA (8) support
     format!(
         "v=0\r\n\
          o=- {} 1 IN IP4 {}\r\n\
          s=rsipstack-server\r\n\
          c=IN IP4 {}\r\n\
          t=0 0\r\n\
-         m=audio {} RTP/AVP 0 8\r\n\
+         m=audio {} RTP/AVP 111 0 8\r\n\
+         a=rtpmap:111 opus/48000/2\r\n\
+         a=fmtp:111 minptime=10;useinbandfec=1\r\n\
          a=rtpmap:0 PCMU/8000\r\n\
          a=rtpmap:8 PCMA/8000\r\n\
          a=ptime:20\r\n\
@@ -144,7 +147,67 @@ mod tests {
         let sdp = generate_sdp_answer(ip, 6000, 123456, 0);
 
         assert!(sdp.contains("c=IN IP4 192.168.1.1"));
-        assert!(sdp.contains("m=audio 6000 RTP/AVP"));
+        assert!(sdp.contains("m=audio 6000 RTP/AVP 111 0 8"));
+        assert!(sdp.contains("a=rtpmap:111 opus/48000/2"));
+        assert!(sdp.contains("a=fmtp:111 minptime=10;useinbandfec=1"));
         assert!(sdp.contains("a=rtpmap:0 PCMU/8000"));
+        assert!(sdp.contains("a=rtpmap:8 PCMA/8000"));
+    }
+
+    #[test]
+    fn test_parse_sdp_offer_opus() {
+        let sdp = "v=0\r\n\
+                   o=- 123456 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 5000 RTP/AVP 111 0 8\r\n\
+                   a=rtpmap:111 opus/48000/2\r\n\
+                   a=fmtp:111 minptime=10;useinbandfec=1\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   a=rtpmap:8 PCMA/8000\r\n";
+
+        let offer = parse_sdp_offer(sdp).unwrap();
+        assert_eq!(offer.peer_addr.to_string(), "192.168.1.100");
+        assert_eq!(offer.peer_port, 5000);
+        assert_eq!(offer.payload_type, 111);
+        assert_eq!(offer.codec_name, "opus");
+    }
+
+    #[test]
+    fn test_parse_sdp_offer_opus_only() {
+        let sdp = "v=0\r\n\
+                   o=- 123456 1 IN IP4 10.0.0.50\r\n\
+                   s=Orvibo Call\r\n\
+                   c=IN IP4 10.0.0.50\r\n\
+                   t=0 0\r\n\
+                   m=audio 4000 RTP/AVP 111\r\n\
+                   a=rtpmap:111 opus/48000/2\r\n\
+                   a=fmtp:111 minptime=10;useinbandfec=1\r\n";
+
+        let offer = parse_sdp_offer(sdp).unwrap();
+        assert_eq!(offer.peer_addr.to_string(), "10.0.0.50");
+        assert_eq!(offer.peer_port, 4000);
+        assert_eq!(offer.payload_type, 111);
+        assert_eq!(offer.codec_name, "opus");
+    }
+
+    #[test]
+    fn test_parse_sdp_offer_opus_dynamic_pt() {
+        // Test that Opus works with any dynamic payload type (96-127), not just 111
+        let sdp = "v=0\r\n\
+                   o=- 123456 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 5000 RTP/AVP 96 0\r\n\
+                   a=rtpmap:96 opus/48000/2\r\n\
+                   a=fmtp:96 minptime=10;useinbandfec=1\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n";
+
+        let offer = parse_sdp_offer(sdp).unwrap();
+        assert_eq!(offer.peer_port, 5000);
+        assert_eq!(offer.payload_type, 96);
+        assert_eq!(offer.codec_name, "opus");
     }
 }

@@ -5,7 +5,7 @@ A generic VoIP server library built with Rust using [rsipstack](https://crates.i
 ## Features
 
 - **SIP Protocol Support**: Full SIP call handling via rsipstack
-- **G.711 Codec Support**: PCMU (payload type 0) and PCMA (payload type 8)
+- **Codec Support**: Opus, PCMU (G.711 μ-law), PCMA (G.711 A-law)
 - **Actor-Style Audio Interface**: Receive/send audio via tokio channels
 - **Pluggable Audio Handlers**: Implement the `AudioHandler` trait for custom processing
 - **Concurrent Calls**: Handles multiple simultaneous calls
