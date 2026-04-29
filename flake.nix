@@ -53,6 +53,9 @@
             pkgs.libopus
             pkgs.openssl.dev
             pkgs.alsa-lib
+
+            # testing
+            pkgs.sipp
           ];
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
         };

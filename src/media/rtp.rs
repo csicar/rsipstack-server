@@ -1,5 +1,7 @@
 //! RTP packet handling
 
+use rtp_rs::RtpReader;
+
 /// Represents an audio frame extracted from an RTP packet
 #[derive(Debug, Clone)]
 pub struct AudioFrame {
@@ -36,74 +38,15 @@ impl AudioFrame {
 }
 
 /// Parse an RTP packet and extract the audio frame
-///
-/// RTP Header format (RFC 3550):
-/// ```text
-///  0                   1                   2                   3
-///  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-/// |V=2|P|X|  CC   |M|     PT      |       sequence number         |
-/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-/// |                           timestamp                           |
-/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-/// |           synchronization source (SSRC) identifier            |
-/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-/// ```
 pub fn parse_rtp_packet(data: &[u8]) -> Option<AudioFrame> {
-    // Minimum RTP header size is 12 bytes
-    if data.len() < 12 {
-        return None;
-    }
-
-    // Check RTP version (must be 2)
-    let version = (data[0] >> 6) & 0x03;
-    if version != 2 {
-        return None;
-    }
-
-    let padding = (data[0] >> 5) & 0x01;
-    let extension = (data[0] >> 4) & 0x01;
-    let csrc_count = data[0] & 0x0F;
-
-    let payload_type = data[1] & 0x7F;
-    let sequence = u16::from_be_bytes([data[2], data[3]]);
-    let timestamp = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-    let ssrc = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-
-    // Calculate header size
-    let mut header_size = 12 + (csrc_count as usize * 4);
-
-    // Handle extension header
-    if extension == 1 {
-        if data.len() < header_size + 4 {
-            return None;
-        }
-        let ext_length =
-            u16::from_be_bytes([data[header_size + 2], data[header_size + 3]]) as usize;
-        header_size += 4 + (ext_length * 4);
-    }
-
-    if data.len() < header_size {
-        return None;
-    }
-
-    // Calculate payload size (accounting for padding)
-    let mut payload_end = data.len();
-    if padding == 1 && !data.is_empty() {
-        let padding_size = data[data.len() - 1] as usize;
-        if padding_size <= data.len() - header_size {
-            payload_end -= padding_size;
-        }
-    }
-
-    let payload = data[header_size..payload_end].to_vec();
+    let rtp = RtpReader::new(data).ok()?;
 
     Some(AudioFrame {
-        payload,
-        timestamp,
-        sequence,
-        ssrc,
-        payload_type,
+        payload: rtp.payload().to_vec(),
+        timestamp: rtp.timestamp(),
+        sequence: rtp.sequence_number().into(),
+        ssrc: rtp.ssrc(),
+        payload_type: rtp.payload_type(),
     })
 }
 
@@ -111,35 +54,14 @@ pub fn parse_rtp_packet(data: &[u8]) -> Option<AudioFrame> {
 pub fn build_rtp_packet(frame: &AudioFrame) -> Vec<u8> {
     use rtp_rs::RtpPacketBuilder;
 
-    match RtpPacketBuilder::new()
+    RtpPacketBuilder::new()
         .payload_type(frame.payload_type)
         .ssrc(frame.ssrc)
         .sequence(frame.sequence.into())
         .timestamp(frame.timestamp)
         .payload(&frame.payload)
         .build()
-    {
-        Ok(packet) => packet,
-        Err(_) => {
-            // Fallback: build packet manually if rtp-rs fails
-            let mut packet = Vec::with_capacity(12 + frame.payload.len());
-
-            // Version (2), no padding, no extension, no CSRC
-            packet.push(0x80);
-            // Marker bit (0), payload type
-            packet.push(frame.payload_type & 0x7F);
-            // Sequence number
-            packet.extend_from_slice(&frame.sequence.to_be_bytes());
-            // Timestamp
-            packet.extend_from_slice(&frame.timestamp.to_be_bytes());
-            // SSRC
-            packet.extend_from_slice(&frame.ssrc.to_be_bytes());
-            // Payload
-            packet.extend_from_slice(&frame.payload);
-
-            packet
-        }
-    }
+        .expect("RTP packet building should not fail with valid inputs")
 }
 
 #[cfg(test)]
