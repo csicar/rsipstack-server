@@ -218,10 +218,14 @@ mod tests {
             codec_name: "PCMU".to_string(),
         };
 
+        // Use a random high port to avoid collisions
+        let test_port = 40000 + (rand::random::<u16>() % 10000);
+        let test_port = test_port & !1; // Ensure even port
+
         let cancel_token = CancellationToken::new();
         let session = MediaSession::new(
-            "0.0.0.0".parse().unwrap(),
-            10000,
+            "127.0.0.1".parse().unwrap(),
+            test_port,
             &offer,
             cancel_token,
         )
@@ -229,7 +233,7 @@ mod tests {
         .unwrap();
 
         let sdp = session.generate_sdp_answer();
-        assert!(sdp.contains("m=audio 10000"));
+        assert!(sdp.contains(&format!("m=audio {}", test_port)));
         assert!(sdp.contains("a=rtpmap:0 PCMU/8000"));
     }
 }

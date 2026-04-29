@@ -1,9 +1,8 @@
 //! Call Handler - Handles incoming INVITE requests
 
-use crate::audio::echo::EchoHandler;
 use crate::audio::handler::AudioHandler;
-use crate::media::session::MediaSession;
 use crate::media::sdp::parse_sdp_offer;
+use crate::media::session::MediaSession;
 use crate::server::ServerState;
 use rsipstack::dialog::server_dialog::ServerInviteDialog;
 use rsipstack::sip as rsip;
@@ -12,15 +11,20 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 /// Handles an incoming call
-pub struct CallHandler {
+pub struct CallHandler<H: AudioHandler> {
     state: Arc<ServerState>,
     dialog: ServerInviteDialog,
+    audio_handler: H,
 }
 
-impl CallHandler {
+impl<H: AudioHandler + 'static> CallHandler<H> {
     /// Create a new call handler
-    pub fn new(state: Arc<ServerState>, dialog: ServerInviteDialog) -> Self {
-        Self { state, dialog }
+    pub fn new(state: Arc<ServerState>, dialog: ServerInviteDialog, audio_handler: H) -> Self {
+        Self {
+            state,
+            dialog,
+            audio_handler,
+        }
     }
 
     /// Handle the incoming call
@@ -82,23 +86,26 @@ impl CallHandler {
 
         // Accept the call with SDP answer
         let headers = vec![rsip::Header::ContentType("application/sdp".into())];
-        if let Err(e) = self.dialog.accept(Some(headers), Some(sdp_answer.into_bytes())) {
+        if let Err(e) = self
+            .dialog
+            .accept(Some(headers), Some(sdp_answer.into_bytes()))
+        {
             error!(dialog_id = %dialog_id, error = ?e, "Failed to accept call");
             return Ok(());
         }
 
-        info!(dialog_id = %dialog_id, "Call accepted, starting echo");
+        info!(dialog_id = %dialog_id, "Call accepted, starting audio handler");
 
         // Start the media session and audio handler
         let (audio_in, audio_out) = media_session.start().await;
 
-        // Create and run the echo handler
-        let echo_handler = EchoHandler::new();
         let dialog_cancel = self.dialog.cancel_token().clone();
 
-        // Run echo handler in a separate task
-        let echo_task = tokio::spawn(async move {
-            echo_handler.process(audio_in, audio_out, dialog_cancel).await;
+        // Run audio handler in a separate task
+        let handler_task = tokio::spawn(async move {
+            self.audio_handler
+                .process(audio_in, audio_out, dialog_cancel)
+                .await;
         });
 
         // Wait for the dialog to be terminated
@@ -107,7 +114,7 @@ impl CallHandler {
         info!(dialog_id = %dialog_id, "Call ended");
 
         // Clean up
-        echo_task.abort();
+        handler_task.abort();
 
         Ok(())
     }

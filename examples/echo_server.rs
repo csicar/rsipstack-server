@@ -1,11 +1,43 @@
-//! Echo Audio Handler - Simply echoes received audio back
+//! SIP Echo Server Example
+//!
+//! A SIP server that accepts all incoming calls and echoes audio back to the caller.
+//! Useful for testing VoIP clients, network connectivity, and audio quality.
+//!
+//! # Usage
+//!
+//! ```bash
+//! cargo run --example echo_server -- --port 5060
+//! ```
 
-use super::handler::AudioHandler;
-use crate::media::rtp::AudioFrame;
-use async_trait::async_trait;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace};
+use clap::Parser;
+use rsipstack_server::{async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipServer};
+use std::net::IpAddr;
+use tracing::{debug, info, trace};
+
+/// SIP Echo Server - Accepts calls and echoes audio back
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// SIP listening port
+    #[arg(long, default_value = "5060")]
+    port: u16,
+
+    /// Bind address (defaults to first non-loopback interface)
+    #[arg(long)]
+    bind: Option<IpAddr>,
+
+    /// External IP address (for NAT traversal)
+    #[arg(long)]
+    external_ip: Option<IpAddr>,
+
+    /// RTP port range start (even number)
+    #[arg(long, default_value = "10000")]
+    rtp_start_port: u16,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, default_value = "info")]
+    log_level: String,
+}
 
 /// Echo handler that forwards all received audio back to the sender
 ///
@@ -14,7 +46,6 @@ use tracing::{debug, trace};
 pub struct EchoHandler;
 
 impl EchoHandler {
-    /// Create a new echo handler
     pub fn new() -> Self {
         Self
     }
@@ -71,10 +102,37 @@ impl AudioHandler for EchoHandler {
 
         debug!("Echo handler stopped, processed {} frames", frame_count);
     }
+}
 
-    fn name(&self) -> &'static str {
-        "EchoHandler"
-    }
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    // Initialize logging
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&args.log_level)),
+        )
+        .with_file(true)
+        .with_line_number(true)
+        .init();
+
+    info!("Starting SIP Echo Server");
+    info!("SIP port: {}", args.port);
+    info!("RTP start port: {}", args.rtp_start_port);
+
+    let server_config = ServerConfig {
+        port: args.port,
+        bind_addr: args.bind,
+        external_ip: args.external_ip,
+        rtp_start_port: args.rtp_start_port,
+    };
+
+    let server = SipServer::new(server_config, EchoHandler::new).await?;
+    server.run().await?;
+
+    Ok(())
 }
 
 #[cfg(test)]

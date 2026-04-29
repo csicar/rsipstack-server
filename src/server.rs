@@ -1,5 +1,6 @@
 //! SIP Server setup and request routing
 
+use crate::audio::handler::AudioHandler;
 use crate::call_handler::CallHandler;
 use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
@@ -17,11 +18,27 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// Server configuration
+#[derive(Debug, Clone)]
 pub struct ServerConfig {
+    /// SIP listening port
     pub port: u16,
+    /// Bind address (defaults to first non-loopback interface)
     pub bind_addr: Option<IpAddr>,
+    /// External IP address for NAT traversal
     pub external_ip: Option<IpAddr>,
+    /// Starting port for RTP media (even number)
     pub rtp_start_port: u16,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            port: 5060,
+            bind_addr: None,
+            external_ip: None,
+            rtp_start_port: 10000,
+        }
+    }
 }
 
 /// Shared state for the SIP server
@@ -35,8 +52,7 @@ pub struct ServerState {
 impl ServerState {
     /// Allocate the next available RTP port (returns even port number)
     pub fn allocate_rtp_port(&self) -> u16 {
-        let port = self.rtp_port_counter.fetch_add(2, Ordering::Relaxed);
-        port
+        self.rtp_port_counter.fetch_add(2, Ordering::Relaxed)
     }
 
     /// Get the IP address to use for media (external IP if set, otherwise local)
@@ -45,17 +61,70 @@ impl ServerState {
     }
 }
 
+/// Factory trait for creating audio handlers
+///
+/// Implement this trait or use a closure with `SipServer::new()`.
+pub trait AudioHandlerFactory: Send + Sync + 'static {
+    /// The audio handler type this factory creates
+    type Handler: AudioHandler + 'static;
+
+    /// Create a new audio handler for a call
+    fn create(&self) -> Self::Handler;
+}
+
+/// Blanket implementation for closures
+impl<F, H> AudioHandlerFactory for F
+where
+    F: Fn() -> H + Send + Sync + 'static,
+    H: AudioHandler + 'static,
+{
+    type Handler = H;
+
+    fn create(&self) -> H {
+        self()
+    }
+}
+
 /// SIP Server
-pub struct SipServer {
+pub struct SipServer<F: AudioHandlerFactory> {
     cancel_token: CancellationToken,
     transport_layer: TransportLayer,
     state: Arc<ServerState>,
     local_addr: SocketAddr,
+    handler_factory: Arc<F>,
 }
 
-impl SipServer {
-    /// Create a new SIP server
-    pub async fn new(config: ServerConfig) -> Result<Self> {
+impl<F: AudioHandlerFactory> SipServer<F> {
+    /// Create a new SIP server with the given configuration and audio handler factory.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Server configuration
+    /// * `handler_factory` - Factory that creates audio handlers for each call.
+    ///   Can be a closure like `|| MyHandler::new()`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use rsipstack_server::{SipServer, ServerConfig};
+    /// # struct MyHandler;
+    /// # impl rsipstack_server::AudioHandler for MyHandler {
+    /// #     fn process<'a, 'b>(
+    /// #         &'a self,
+    /// #         _: tokio::sync::mpsc::UnboundedReceiver<rsipstack_server::AudioFrame>,
+    /// #         _: tokio::sync::mpsc::UnboundedSender<rsipstack_server::AudioFrame>,
+    /// #         _: tokio_util::sync::CancellationToken,
+    /// #     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'b>>
+    /// #     where 'a: 'b {
+    /// #         Box::pin(async {})
+    /// #     }
+    /// # }
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let server = SipServer::new(ServerConfig::default(), || MyHandler).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn new(config: ServerConfig, handler_factory: F) -> Result<Self> {
         let cancel_token = CancellationToken::new();
 
         // Get local IP address
@@ -97,16 +166,20 @@ impl SipServer {
             transport_layer,
             state,
             local_addr,
+            handler_factory: Arc::new(handler_factory),
         })
     }
 
     /// Run the SIP server
+    ///
+    /// This will block until the server is shut down (via Ctrl+C or cancellation token).
     pub async fn run(self) -> Result<()> {
         // Extract all needed values from self before consuming transport_layer
         let cancel_token = self.cancel_token;
         let state = self.state;
         let local_addr = self.local_addr;
         let transport_layer = self.transport_layer;
+        let handler_factory = self.handler_factory;
 
         let endpoint = EndpointBuilder::new()
             .with_user_agent("rsipstack-server/0.1.0")
@@ -123,7 +196,7 @@ impl SipServer {
         let contact = rsip::Uri {
             scheme: Some(rsip::Scheme::Sip),
             auth: Some(rsip::Auth {
-                user: "echo".to_string(),
+                user: "server".to_string(),
                 password: None,
             }),
             host_with_port: local_addr.into(),
@@ -131,7 +204,7 @@ impl SipServer {
             headers: vec![],
         };
 
-        info!("SIP Echo Server listening on {}", local_addr);
+        info!("SIP Server listening on {}", local_addr);
         info!("Contact URI: {}", contact);
 
         select! {
@@ -149,7 +222,7 @@ impl SipServer {
                     Err(e) => error!("Request processing error: {:?}", e),
                 }
             }
-            r = Self::process_dialog_states(state.clone(), dialog_layer.clone(), state_receiver) => {
+            r = Self::process_dialog_states(state.clone(), dialog_layer.clone(), state_receiver, handler_factory) => {
                 match r {
                     Ok(_) => info!("Dialog state processing finished"),
                     Err(e) => error!("Dialog state processing error: {:?}", e),
@@ -250,6 +323,7 @@ impl SipServer {
         server_state: Arc<ServerState>,
         dialog_layer: Arc<DialogLayer>,
         mut state_receiver: DialogStateReceiver,
+        handler_factory: Arc<F>,
     ) -> Result<()> {
         while let Some(state) = state_receiver.recv().await {
             match state {
@@ -267,8 +341,10 @@ impl SipServer {
                     match dialog {
                         Dialog::ServerInvite(server_dialog) => {
                             let state = server_state.clone();
+                            let factory = handler_factory.clone();
                             tokio::spawn(async move {
-                                let handler = CallHandler::new(state, server_dialog);
+                                let audio_handler = factory.create();
+                                let handler = CallHandler::new(state, server_dialog, audio_handler);
                                 if let Err(e) = handler.handle_call().await {
                                     error!("Call handler error: {:?}", e);
                                 }
