@@ -2,14 +2,33 @@
 
 use std::net::IpAddr;
 
+/// Information about a single codec from SDP
+#[derive(Debug, Clone)]
+pub struct CodecInfo {
+    pub payload_type: u8,
+    pub codec_name: String,
+}
+
 /// Parsed SDP offer information
 #[derive(Debug, Clone)]
 pub struct SdpOffer {
     pub peer_addr: IpAddr,
     pub peer_port: u16,
+    /// All codecs offered, in preference order
+    pub codecs: Vec<CodecInfo>,
+    /// The selected codec (first mutually supported codec)
     pub payload_type: u8,
-    #[allow(dead_code)]
     pub codec_name: String,
+}
+
+/// Codecs we support, in preference order
+const SUPPORTED_CODECS: &[&str] = &["opus", "PCMU", "PCMA"];
+
+/// Check if we support a codec by name (case-insensitive)
+fn is_supported_codec(name: &str) -> bool {
+    SUPPORTED_CODECS
+        .iter()
+        .any(|&supported| supported.eq_ignore_ascii_case(name))
 }
 
 /// Parse an SDP offer and extract relevant information
@@ -34,65 +53,109 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
 
     let peer_port = audio_media.media.port;
 
-    // Parse the first format (payload type)
-    let payload_type: u8 = audio_media
+    // Parse all offered payload types
+    let payload_types: Vec<u8> = audio_media
         .media
         .fmt
         .split_whitespace()
-        .next()
-        .and_then(|pt| pt.parse().ok())
-        .unwrap_or(0); // Default to PCMU
+        .filter_map(|pt| pt.parse().ok())
+        .collect();
 
-    // Determine codec name from payload type
-    // Static payload types (0-95) have fixed meanings, dynamic types (96-127) need rtpmap lookup
-    let codec_name = match payload_type {
-        0 => "PCMU".to_string(),
-        8 => "PCMA".to_string(),
-        _ => {
-            // Try to find rtpmap attribute for this payload type
-            let mut found_codec = None;
-            for attr in &audio_media.attributes {
-                if let sdp_rs::lines::Attribute::Rtpmap(rtpmap) = attr {
-                    if rtpmap.payload_type == payload_type as u32 {
-                        found_codec = Some(rtpmap.encoding_name.clone());
-                        break;
+    // Build codec info for each payload type
+    let mut codecs = Vec::new();
+    for pt in &payload_types {
+        let codec_name = match pt {
+            0 => "PCMU".to_string(),
+            8 => "PCMA".to_string(),
+            _ => {
+                // Try to find rtpmap attribute for this payload type
+                let mut found_codec = None;
+                for attr in &audio_media.attributes {
+                    if let sdp_rs::lines::Attribute::Rtpmap(rtpmap) = attr {
+                        if rtpmap.payload_type == *pt as u32 {
+                            found_codec = Some(rtpmap.encoding_name.clone());
+                            break;
+                        }
                     }
                 }
+                found_codec.unwrap_or_else(|| format!("PT{}", pt))
             }
-            found_codec.unwrap_or_else(|| format!("PT{}", payload_type))
-        }
-    };
+        };
+        codecs.push(CodecInfo {
+            payload_type: *pt,
+            codec_name,
+        });
+    }
+
+    // Select the first codec we support (respecting client's preference order)
+    let selected = codecs
+        .iter()
+        .find(|c| is_supported_codec(&c.codec_name))
+        .cloned()
+        .unwrap_or_else(|| {
+            // Fallback to first offered codec if none supported
+            codecs.first().cloned().unwrap_or(CodecInfo {
+                payload_type: 0,
+                codec_name: "PCMU".to_string(),
+            })
+        });
 
     Ok(SdpOffer {
         peer_addr,
         peer_port,
-        payload_type,
-        codec_name,
+        codecs,
+        payload_type: selected.payload_type,
+        codec_name: selected.codec_name,
     })
 }
 
-/// Generate an SDP answer
+/// Generate an SDP answer based on the offered codecs
+///
+/// Only includes codecs that were both offered and are supported by us.
 pub fn generate_sdp_answer(
     local_ip: IpAddr,
     rtp_port: u16,
     session_id: u64,
-    _payload_type: u8,
+    offered_codecs: &[CodecInfo],
 ) -> String {
-    // Generate SDP with Opus, PCMU (0), and PCMA (8) support
+    // Filter to only codecs we support, preserving offer order
+    let supported: Vec<&CodecInfo> = offered_codecs
+        .iter()
+        .filter(|c| is_supported_codec(&c.codec_name))
+        .collect();
+
+    // Build payload type list for m= line
+    let pt_list: String = supported
+        .iter()
+        .map(|c| c.payload_type.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // Build rtpmap attributes
+    let mut rtpmap_lines = String::new();
+    for codec in &supported {
+        let rtpmap = match codec.codec_name.to_ascii_lowercase().as_str() {
+            "opus" => format!(
+                "a=rtpmap:{} opus/48000/2\r\na=fmtp:{} minptime=10;useinbandfec=1\r\n",
+                codec.payload_type, codec.payload_type
+            ),
+            "pcmu" => format!("a=rtpmap:{} PCMU/8000\r\n", codec.payload_type),
+            "pcma" => format!("a=rtpmap:{} PCMA/8000\r\n", codec.payload_type),
+            _ => continue,
+        };
+        rtpmap_lines.push_str(&rtpmap);
+    }
+
     format!(
         "v=0\r\n\
          o=- {} 1 IN IP4 {}\r\n\
          s=rsipstack-server\r\n\
          c=IN IP4 {}\r\n\
          t=0 0\r\n\
-         m=audio {} RTP/AVP 111 0 8\r\n\
-         a=rtpmap:111 opus/48000/2\r\n\
-         a=fmtp:111 minptime=10;useinbandfec=1\r\n\
-         a=rtpmap:0 PCMU/8000\r\n\
-         a=rtpmap:8 PCMA/8000\r\n\
-         a=ptime:20\r\n\
+         m=audio {} RTP/AVP {}\r\n\
+         {}a=ptime:20\r\n\
          a=sendrecv\r\n",
-        session_id, local_ip, local_ip, rtp_port
+        session_id, local_ip, local_ip, rtp_port, pt_list, rtpmap_lines
     )
 }
 
@@ -139,12 +202,23 @@ mod tests {
         assert_eq!(offer.peer_port, 5000);
         assert_eq!(offer.payload_type, 0);
         assert_eq!(offer.codec_name, "PCMU");
+        // Should have both codecs
+        assert_eq!(offer.codecs.len(), 2);
+        assert_eq!(offer.codecs[0].payload_type, 0);
+        assert_eq!(offer.codecs[0].codec_name, "PCMU");
+        assert_eq!(offer.codecs[1].payload_type, 8);
+        assert_eq!(offer.codecs[1].codec_name, "PCMA");
     }
 
     #[test]
-    fn test_generate_sdp_answer() {
+    fn test_generate_sdp_answer_all_codecs() {
         let ip: IpAddr = "192.168.1.1".parse().unwrap();
-        let sdp = generate_sdp_answer(ip, 6000, 123456, 0);
+        let offered = vec![
+            CodecInfo { payload_type: 111, codec_name: "opus".to_string() },
+            CodecInfo { payload_type: 0, codec_name: "PCMU".to_string() },
+            CodecInfo { payload_type: 8, codec_name: "PCMA".to_string() },
+        ];
+        let sdp = generate_sdp_answer(ip, 6000, 123456, &offered);
 
         assert!(sdp.contains("c=IN IP4 192.168.1.1"));
         assert!(sdp.contains("m=audio 6000 RTP/AVP 111 0 8"));
@@ -152,6 +226,37 @@ mod tests {
         assert!(sdp.contains("a=fmtp:111 minptime=10;useinbandfec=1"));
         assert!(sdp.contains("a=rtpmap:0 PCMU/8000"));
         assert!(sdp.contains("a=rtpmap:8 PCMA/8000"));
+    }
+
+    #[test]
+    fn test_generate_sdp_answer_pcmu_only() {
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        let offered = vec![
+            CodecInfo { payload_type: 0, codec_name: "PCMU".to_string() },
+        ];
+        let sdp = generate_sdp_answer(ip, 6000, 123456, &offered);
+
+        assert!(sdp.contains("m=audio 6000 RTP/AVP 0\r\n"));
+        assert!(sdp.contains("a=rtpmap:0 PCMU/8000"));
+        // Should NOT contain opus or PCMA
+        assert!(!sdp.contains("opus"));
+        assert!(!sdp.contains("PCMA"));
+    }
+
+    #[test]
+    fn test_generate_sdp_answer_filters_unsupported() {
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        // Offer includes an unsupported codec
+        let offered = vec![
+            CodecInfo { payload_type: 99, codec_name: "G729".to_string() },
+            CodecInfo { payload_type: 0, codec_name: "PCMU".to_string() },
+        ];
+        let sdp = generate_sdp_answer(ip, 6000, 123456, &offered);
+
+        // Should only contain PCMU, not G729
+        assert!(sdp.contains("m=audio 6000 RTP/AVP 0\r\n"));
+        assert!(sdp.contains("a=rtpmap:0 PCMU/8000"));
+        assert!(!sdp.contains("G729"));
     }
 
     #[test]
