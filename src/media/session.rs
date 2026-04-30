@@ -1,7 +1,7 @@
 //! Media Session - RTP socket management and audio channel interface
 
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame};
-use super::sdp::{generate_sdp_answer, SdpOffer};
+use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer};
 use crate::codec::{create_codec, Codec};
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
@@ -23,6 +23,8 @@ pub struct MediaSession {
     payload_type: u8,
     /// Codec name (for dynamic payload types)
     codec_name: String,
+    /// All codecs offered by the peer
+    offered_codecs: Vec<CodecInfo>,
     /// Session ID for SDP
     session_id: u64,
     /// Cancellation token
@@ -60,14 +62,18 @@ impl MediaSession {
             peer_addr,
             payload_type: offer.payload_type,
             codec_name: offer.codec_name.clone(),
+            offered_codecs: offer.codecs.clone(),
             session_id,
             cancel_token,
         })
     }
 
     /// Generate SDP answer for this session
+    ///
+    /// The answer only includes codecs that were both offered by the peer
+    /// and supported by us.
     pub fn generate_sdp_answer(&self) -> String {
-        generate_sdp_answer(self.local_ip, self.rtp_port, self.session_id, self.payload_type)
+        generate_sdp_answer(self.local_ip, self.rtp_port, self.session_id, &self.offered_codecs)
     }
 
     /// Start the media session and return audio channels
@@ -291,10 +297,14 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_media_session_sdp() {
+    async fn test_media_session_sdp_pcmu_only() {
         let offer = SdpOffer {
             peer_addr: "192.168.1.100".parse().unwrap(),
             peer_port: 5000,
+            codecs: vec![CodecInfo {
+                payload_type: 0,
+                codec_name: "PCMU".to_string(),
+            }],
             payload_type: 0,
             codec_name: "PCMU".to_string(),
         };
@@ -316,5 +326,48 @@ mod tests {
         let sdp = session.generate_sdp_answer();
         assert!(sdp.contains(&format!("m=audio {}", test_port)));
         assert!(sdp.contains("a=rtpmap:0 PCMU/8000"));
+        // Should NOT contain opus since it wasn't offered
+        assert!(!sdp.contains("opus"));
+    }
+
+    #[tokio::test]
+    async fn test_media_session_sdp_multiple_codecs() {
+        let offer = SdpOffer {
+            peer_addr: "192.168.1.100".parse().unwrap(),
+            peer_port: 5000,
+            codecs: vec![
+                CodecInfo {
+                    payload_type: 111,
+                    codec_name: "opus".to_string(),
+                },
+                CodecInfo {
+                    payload_type: 0,
+                    codec_name: "PCMU".to_string(),
+                },
+            ],
+            payload_type: 111,
+            codec_name: "opus".to_string(),
+        };
+
+        let test_port = 40000 + (rand::random::<u16>() % 10000);
+        let test_port = test_port & !1;
+
+        let cancel_token = CancellationToken::new();
+        let session = MediaSession::new(
+            "127.0.0.1".parse().unwrap(),
+            test_port,
+            &offer,
+            cancel_token,
+        )
+        .await
+        .unwrap();
+
+        let sdp = session.generate_sdp_answer();
+        // Should contain both offered codecs
+        assert!(sdp.contains("opus/48000"));
+        assert!(sdp.contains("PCMU/8000"));
+        // Payload types should match what was offered
+        assert!(sdp.contains("a=rtpmap:111 opus"));
+        assert!(sdp.contains("a=rtpmap:0 PCMU"));
     }
 }
