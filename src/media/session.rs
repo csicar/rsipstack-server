@@ -1,6 +1,6 @@
 //! Media Session - RTP socket management and audio channel interface
 
-use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame};
+use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
 use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer};
 use crate::codec::{create_codec, Codec};
 use std::net::{IpAddr, SocketAddr};
@@ -126,7 +126,7 @@ impl MediaSession {
         let send_socket = rtp_socket;
         let send_cancel = cancel_token;
         let send_peer = self.peer_addr;
-        let send_payload_type = self.payload_type;
+        let payload_type = self.payload_type;
         tokio::spawn(async move {
             Self::rtp_send_task(
                 send_socket,
@@ -134,7 +134,7 @@ impl MediaSession {
                 send_cancel,
                 send_peer,
                 send_codec,
-                send_payload_type,
+                payload_type,
             )
             .await;
         });
@@ -191,13 +191,7 @@ impl MediaSession {
                                     raw.payload.iter().map(|&b| (b as i16 - 128) * 256).collect()
                                 };
 
-                                let frame = AudioFrame {
-                                    samples,
-                                    timestamp: raw.timestamp,
-                                    sequence: raw.sequence,
-                                    ssrc: raw.ssrc,
-                                    payload_type: raw.payload_type,
-                                };
+                                let frame = AudioFrame { samples };
 
                                 if audio_tx.send(frame).is_err() {
                                     debug!("Audio channel closed, stopping receive task");
@@ -216,7 +210,7 @@ impl MediaSession {
             }
         }
 
-        let _ = default_payload_type; // Silence unused warning
+        let _ = default_payload_type; // Keep parameter for future use
     }
 
     /// RTP send task - receives AudioFrames from the channel, encodes them, and sends RTP packets
@@ -226,9 +220,10 @@ impl MediaSession {
         cancel_token: CancellationToken,
         peer_addr: SocketAddr,
         mut codec: Option<Box<dyn Codec>>,
-        default_payload_type: u8,
+        payload_type: u8,
     ) {
         let mut packet_count = 0u64;
+        let mut rtp_state = RtpSendState::new(payload_type);
 
         loop {
             tokio::select! {
@@ -252,13 +247,9 @@ impl MediaSession {
                                 continue;
                             }
 
-                            let packet = build_rtp_packet(
-                                &payload,
-                                frame.timestamp,
-                                frame.sequence,
-                                frame.ssrc,
-                                frame.payload_type,
-                            );
+                            // Get RTP header values from internal state
+                            let rtp = rtp_state.next();
+                            let packet = build_rtp_packet(&payload, &rtp);
 
                             match socket.send_to(&packet, peer_addr).await {
                                 Ok(_) => {
@@ -266,8 +257,8 @@ impl MediaSession {
                                     if packet_count % 500 == 1 {
                                         debug!(
                                             count = packet_count,
-                                            seq = frame.sequence,
-                                            ts = frame.timestamp,
+                                            seq = rtp.sequence,
+                                            ts = rtp.timestamp,
                                             peer = %peer_addr,
                                             "RTP send progress"
                                         );
@@ -287,8 +278,6 @@ impl MediaSession {
                 }
             }
         }
-
-        let _ = default_payload_type; // Silence unused warning
     }
 }
 

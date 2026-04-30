@@ -124,13 +124,13 @@ pub trait AudioHandler: Send + Sync {
 
 ```rust
 pub struct AudioFrame {
-    pub payload: Vec<u8>,      // Raw audio data
-    pub timestamp: u32,        // RTP timestamp
-    pub sequence: u16,         // RTP sequence number
-    pub ssrc: u32,             // Synchronization source
-    pub payload_type: u8,      // Codec (0=PCMU, 8=PCMA)
+    /// Decoded PCM samples at 48kHz, 960 samples per frame (20ms)
+    pub samples: Vec<i16>,
 }
 ```
+
+The library handles all RTP details (timestamps, sequence numbers, SSRC) internally.
+You only work with decoded PCM audio samples.
 
 ## Examples
 
