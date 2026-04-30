@@ -4,43 +4,56 @@ use rtp_rs::RtpReader;
 
 /// Represents an audio frame with decoded PCM samples
 ///
-/// All audio is normalized to 48kHz PCM i16 samples.
-/// The `payload_type` field is preserved for encoding back to RTP.
+/// Contains decoded PCM samples at 48kHz, 960 samples per frame (20ms).
+/// All RTP details (timestamps, sequence numbers, SSRC) are handled
+/// internally by the library.
 #[derive(Debug, Clone)]
 pub struct AudioFrame {
-    /// Decoded PCM samples at 48kHz
+    /// Decoded PCM samples at 48kHz, 960 samples per frame (20ms)
     pub samples: Vec<i16>,
-    /// RTP timestamp
-    pub timestamp: u32,
-    /// RTP sequence number
-    pub sequence: u16,
-    /// Synchronization source identifier
-    pub ssrc: u32,
-    /// Payload type (codec identifier, used when encoding back to RTP)
-    pub payload_type: u8,
 }
 
 impl AudioFrame {
-    /// Create a new audio frame
-    #[allow(dead_code)]
-    pub fn new(
-        samples: Vec<i16>,
-        timestamp: u32,
-        sequence: u16,
-        ssrc: u32,
-        payload_type: u8,
-    ) -> Self {
+    /// Create a new audio frame with the given samples
+    pub fn new(samples: Vec<i16>) -> Self {
+        Self { samples }
+    }
+}
+
+/// Internal state for RTP packet generation
+#[derive(Clone)]
+pub(crate) struct RtpSendState {
+    /// Synchronization source (random, unique per session)
+    pub ssrc: u32,
+    /// Current sequence number (auto-increments)
+    pub sequence: u16,
+    /// Current timestamp (increments by 960 per frame for 48kHz)
+    pub timestamp: u32,
+    /// Payload type (determined by negotiated codec)
+    pub payload_type: u8,
+}
+
+impl RtpSendState {
+    pub fn new(payload_type: u8) -> Self {
         Self {
-            samples,
-            timestamp,
-            sequence,
-            ssrc,
+            ssrc: rand::random(),
+            sequence: rand::random(),
+            timestamp: rand::random(),
             payload_type,
         }
+    }
+
+    /// Return current state and advance for next packet
+    pub fn next(&mut self) -> RtpSendState {
+        let current = self.clone();
+        self.sequence = self.sequence.wrapping_add(1);
+        self.timestamp = self.timestamp.wrapping_add(960); // 20ms at 48kHz
+        current
     }
 }
 
 /// Raw RTP packet data (before decoding)
+#[allow(dead_code)]
 pub(crate) struct RawRtpPacket {
     pub payload: Vec<u8>,
     pub timestamp: u32,
@@ -63,20 +76,14 @@ pub(crate) fn parse_rtp_packet(data: &[u8]) -> Option<RawRtpPacket> {
 }
 
 /// Build an RTP packet from raw data (after codec encoding)
-pub(crate) fn build_rtp_packet(
-    payload: &[u8],
-    timestamp: u32,
-    sequence: u16,
-    ssrc: u32,
-    payload_type: u8,
-) -> Vec<u8> {
+pub(crate) fn build_rtp_packet(payload: &[u8], state: &RtpSendState) -> Vec<u8> {
     use rtp_rs::RtpPacketBuilder;
 
     RtpPacketBuilder::new()
-        .payload_type(payload_type)
-        .ssrc(ssrc)
-        .sequence(sequence.into())
-        .timestamp(timestamp)
+        .payload_type(state.payload_type)
+        .ssrc(state.ssrc)
+        .sequence(state.sequence.into())
+        .timestamp(state.timestamp)
         .payload(payload)
         .build()
         .expect("RTP packet building should not fail with valid inputs")
@@ -110,7 +117,13 @@ mod tests {
     #[test]
     fn test_build_rtp_packet() {
         let payload = vec![0xAA; 160];
-        let packet = build_rtp_packet(&payload, 320, 2, 0xDEADBEEF, 0);
+        let state = RtpSendState {
+            ssrc: 0xDEADBEEF,
+            sequence: 2,
+            timestamp: 320,
+            payload_type: 0,
+        };
+        let packet = build_rtp_packet(&payload, &state);
 
         assert!(packet.len() >= 12 + 160);
 
@@ -125,18 +138,8 @@ mod tests {
 
     #[test]
     fn test_audio_frame_new() {
-        let frame = AudioFrame::new(
-            vec![100, 200, 300],
-            160,
-            1,
-            12345,
-            0,
-        );
+        let frame = AudioFrame::new(vec![100, 200, 300]);
 
         assert_eq!(frame.samples, vec![100, 200, 300]);
-        assert_eq!(frame.timestamp, 160);
-        assert_eq!(frame.sequence, 1);
-        assert_eq!(frame.ssrc, 12345);
-        assert_eq!(frame.payload_type, 0);
     }
 }
