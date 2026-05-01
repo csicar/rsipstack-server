@@ -36,20 +36,20 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
     let sdp = sdp_rs::SessionDescription::try_from(sdp_body)
         .map_err(|e| SdpParseError::ParseError(format!("{:?}", e)))?;
 
-    // Get connection address from the SDP connection line
-    // connection_address.base is already an IpAddr
-    let peer_addr = sdp
-        .connection
-        .as_ref()
-        .map(|c| c.connection_address.base)
-        .ok_or(SdpParseError::MissingConnectionAddress)?;
-
     // Find audio media description
     let audio_media = sdp
         .media_descriptions
         .iter()
         .find(|m| m.media.media == sdp_rs::lines::media::MediaType::Audio)
         .ok_or(SdpParseError::NoAudioMedia)?;
+
+    // Get connection address - prefer media-level, fall back to session-level
+    let peer_addr = audio_media
+        .connections
+        .first()
+        .or(sdp.connection.as_ref())
+        .map(|c| c.connection_address.base)
+        .ok_or(SdpParseError::MissingConnectionAddress)?;
 
     let peer_port = audio_media.media.port;
 
@@ -314,5 +314,47 @@ mod tests {
         assert_eq!(offer.peer_port, 5000);
         assert_eq!(offer.payload_type, 96);
         assert_eq!(offer.codec_name, "opus");
+    }
+
+    #[test]
+    fn test_parse_sdp_offer_complex() {
+        let sdp = "v=0\n\
+                   o=- 3754764223 37547642423 IN IP4 12.22.0.39\n\
+                   s=My System\n\
+                   t=0 0\n\
+                   m=audio 53264 RTP/AVP 115 9 8 0 103 101\n\
+                   c=IN IP4 12.22.0.39\n\
+                   a=rtpmap:115 opus/48000/2\n\
+                   a=rtpmap:9 G722/8000\n\
+                   a=rtpmap:8 PCMA/8000\n\
+                   a=rtpmap:0 PCMU/8000\n\
+                   a=rtpmap:103 telephone-event/48000\n\
+                   a=fmtp:103 0-15\n\
+                   a=rtpmap:101 telephone-event/8000\n\
+                   a=fmtp:101 0-15\n\
+                   a=sendrecv\n\
+                   a=rtcp:53265\n\
+                   a=rtcp-mux\n\
+                   a=ice-ufrag:GEmr7dsjs\n\
+                   a=ice-pwd:askldkjad\n\
+                   a=candidate:akjaslkjakajd 1 UDP 213012312331 12.22.0.39 53134 typ host\n\
+                   a=candidate:akjaslkjakajd 2 UDP 213012312330 12.22.0.39 53135 typ host\n";
+
+        let offer = parse_sdp_offer(sdp).unwrap();
+        assert_eq!(offer.peer_addr.to_string(), "12.22.0.39");
+        assert_eq!(offer.peer_port, 53264);
+        // Should select opus (PT 115) as it's first and we support it
+        assert_eq!(offer.payload_type, 115);
+        assert_eq!(offer.codec_name, "opus");
+        // Should have all 6 codecs
+        assert_eq!(offer.codecs.len(), 6);
+        assert_eq!(offer.codecs[0].payload_type, 115);
+        assert_eq!(offer.codecs[0].codec_name, "opus");
+        assert_eq!(offer.codecs[1].payload_type, 9);
+        assert_eq!(offer.codecs[1].codec_name, "G722");
+        assert_eq!(offer.codecs[2].payload_type, 8);
+        assert_eq!(offer.codecs[2].codec_name, "PCMA");
+        assert_eq!(offer.codecs[3].payload_type, 0);
+        assert_eq!(offer.codecs[3].codec_name, "PCMU");
     }
 }
