@@ -10,7 +10,9 @@
 //! ```
 
 use clap::Parser;
-use rsipstack_server::{async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipServer};
+use rsipstack_server::{
+    async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipServer,
+};
 use std::net::IpAddr;
 use tracing::{debug, info, trace};
 
@@ -84,7 +86,7 @@ impl AudioHandler for EchoHandler {
                             );
 
                             // Send the frame right back (echo it)
-                            if audio_out.send(frame).is_err() {
+                            if audio_out.send(AudioFrame { samples: frame.samples }).is_err() {
                                 debug!("Output channel closed, stopping echo handler");
                                 break;
                             }
