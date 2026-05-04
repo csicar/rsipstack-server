@@ -62,7 +62,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             media_ip,
             rtp_port,
             &offer,
-            self.state.cancel_token.child_token(),
+            self.dialog.cancel_token().child_token(),
         )
         .await
         {
