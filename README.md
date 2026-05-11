@@ -57,7 +57,7 @@ rsipstack-server = "0.1"
 ```rust
 use rsipstack_server::{
     async_trait, mpsc, AudioFrame, AudioHandler,
-    CancellationToken, ServerConfig, SipServer
+    CancellationToken, ServerConfig, SipHeaders, SipServer
 };
 
 // Define your audio handler
@@ -70,6 +70,7 @@ impl AudioHandler for EchoHandler {
         mut audio_in: mpsc::UnboundedReceiver<AudioFrame>,
         audio_out: mpsc::UnboundedSender<AudioFrame>,
         cancel_token: CancellationToken,
+        _headers: SipHeaders,
     ) {
         loop {
             tokio::select! {
@@ -112,6 +113,7 @@ pub trait AudioHandler: Send + Sync {
         audio_in: mpsc::UnboundedReceiver<AudioFrame>,
         audio_out: mpsc::UnboundedSender<AudioFrame>,
         cancel_token: CancellationToken,
+        headers: SipHeaders,
     );
 }
 ```
@@ -119,6 +121,7 @@ pub trait AudioHandler: Send + Sync {
 - `audio_in`: Receives `AudioFrame`s from the remote peer
 - `audio_out`: Send `AudioFrame`s to the remote peer
 - `cancel_token`: Signals when the call ends
+- `headers`: SIP headers from the INVITE request
 
 ### AudioFrame
 

@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use rsipstack_server::{SipServer, ServerConfig, AudioHandler, AudioFrame};
+//! use rsipstack_server::{SipServer, ServerConfig, AudioHandler, AudioFrame, SipHeaders};
 //! use tokio::sync::mpsc;
 //! use tokio_util::sync::CancellationToken;
 //! use async_trait::async_trait;
@@ -21,6 +21,7 @@
 //!         mut audio_in: mpsc::UnboundedReceiver<AudioFrame>,
 //!         audio_out: mpsc::UnboundedSender<AudioFrame>,
 //!         cancel_token: CancellationToken,
+//!         _headers: SipHeaders,
 //!     ) {
 //!         loop {
 //!             tokio::select! {
@@ -52,7 +53,7 @@ mod media;
 mod server;
 
 // Re-export public API
-pub use audio::handler::AudioHandler;
+pub use audio::handler::{AudioHandler, SipHeaders};
 pub use media::rtp::AudioFrame;
 pub use server::{ServerConfig, ServerState, SipServer};
 

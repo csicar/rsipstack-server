@@ -11,7 +11,8 @@
 
 use clap::Parser;
 use rsipstack_server::{
-    async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipServer,
+    async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipHeaders,
+    SipServer,
 };
 use std::net::IpAddr;
 use tracing::{debug, info, trace};
@@ -66,6 +67,7 @@ impl AudioHandler for EchoHandler {
         mut audio_in: mpsc::UnboundedReceiver<AudioFrame>,
         audio_out: mpsc::UnboundedSender<AudioFrame>,
         cancel_token: CancellationToken,
+        _headers: SipHeaders,
     ) {
         debug!("Echo handler started");
         let mut frame_count = 0u64;
@@ -148,7 +150,7 @@ mod tests {
 
         let cancel_clone = cancel_token.clone();
         let handle = tokio::spawn(async move {
-            handler.process(in_rx, out_tx, cancel_clone).await;
+            handler.process(in_rx, out_tx, cancel_clone, vec![]).await;
         });
 
         // Send a test frame (960 samples at 48kHz = 20ms)

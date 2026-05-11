@@ -108,7 +108,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
     /// # Example
     ///
     /// ```no_run
-    /// # use rsipstack_server::{SipServer, ServerConfig};
+    /// # use rsipstack_server::{SipServer, ServerConfig, SipHeaders};
     /// # struct MyHandler;
     /// # impl rsipstack_server::AudioHandler for MyHandler {
     /// #     fn process<'a, 'b>(
@@ -116,6 +116,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
     /// #         _: tokio::sync::mpsc::UnboundedReceiver<rsipstack_server::AudioFrame>,
     /// #         _: tokio::sync::mpsc::UnboundedSender<rsipstack_server::AudioFrame>,
     /// #         _: tokio_util::sync::CancellationToken,
+    /// #         _: SipHeaders,
     /// #     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'b>>
     /// #     where 'a: 'b {
     /// #         Box::pin(async {})
