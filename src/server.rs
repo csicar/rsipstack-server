@@ -94,6 +94,8 @@ pub struct SipServer<F: AudioHandlerFactory> {
     handler_factory: Arc<F>,
 }
 
+const SIP_USER_AGENT: &str = concat!("rsipstack-server/", env!("CARGO_PKG_VERSION"));
+
 impl<F: AudioHandlerFactory> SipServer<F> {
     /// Create a new SIP server with the given configuration and audio handler factory.
     ///
@@ -182,7 +184,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         let handler_factory = self.handler_factory;
 
         let endpoint = EndpointBuilder::new()
-            .with_user_agent("rsipstack-server/0.1.0")
+            .with_user_agent(SIP_USER_AGENT)
             .with_cancel_token(cancel_token.clone())
             .with_transport_layer(transport_layer)
             .build();
