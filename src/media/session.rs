@@ -73,7 +73,12 @@ impl MediaSession {
     /// The answer only includes codecs that were both offered by the peer
     /// and supported by us.
     pub fn generate_sdp_answer(&self) -> String {
-        generate_sdp_answer(self.local_ip, self.rtp_port, self.session_id, &self.offered_codecs)
+        generate_sdp_answer(
+            self.local_ip,
+            self.rtp_port,
+            self.session_id,
+            &self.offered_codecs,
+        )
     }
 
     /// Start the media session and return audio channels
