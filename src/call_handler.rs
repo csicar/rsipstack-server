@@ -119,6 +119,13 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
         // Clean up
         handler_task.abort();
 
+        // Send BYE to ensure the SIP call is properly closed.
+        // This is safe to call even if the remote already sent BYE -
+        // bye() is a no-op if the dialog is already terminated.
+        if let Err(e) = self.dialog.bye().await {
+            warn!(dialog_id = %dialog_id, error = ?e, "Failed to send BYE");
+        }
+
         Ok(())
     }
 }
