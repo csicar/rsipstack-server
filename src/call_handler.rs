@@ -101,10 +101,13 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
 
         let dialog_cancel = self.dialog.cancel_token().clone();
 
+        // Extract headers from the INVITE request
+        let headers = initial_request.headers.0.to_vec();
+
         // Run audio handler in a separate task
         let handler_task = tokio::spawn(async move {
             self.audio_handler
-                .process(audio_in, audio_out, dialog_cancel)
+                .process(audio_in, audio_out, dialog_cancel, headers)
                 .await;
         });
 

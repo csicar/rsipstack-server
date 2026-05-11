@@ -12,7 +12,8 @@
 //! If sipp is not available, tests will be skipped.
 
 use rsipstack_server::{
-    async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipServer,
+    async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipHeaders,
+    SipServer,
 };
 use std::net::UdpSocket;
 use std::process::Command;
@@ -32,6 +33,7 @@ impl AudioHandler for EchoHandler {
         mut audio_in: mpsc::UnboundedReceiver<AudioFrame>,
         audio_out: mpsc::UnboundedSender<AudioFrame>,
         cancel_token: CancellationToken,
+        _headers: SipHeaders,
     ) {
         loop {
             tokio::select! {
