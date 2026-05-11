@@ -123,7 +123,10 @@ async fn test_echo_server_with_sipp() {
     let local_ip = get_local_ip();
     let server_addr = format!("{}:{}", local_ip, sip_port);
 
-    eprintln!("Starting server on {} (RTP from {})", server_addr, rtp_start_port);
+    eprintln!(
+        "Starting server on {} (RTP from {})",
+        server_addr, rtp_start_port
+    );
 
     // Start the server
     let config = ServerConfig {
@@ -212,7 +215,10 @@ async fn test_multiple_concurrent_calls() {
     let local_ip = get_local_ip();
     let server_addr = format!("{}:{}", local_ip, sip_port);
 
-    eprintln!("Starting server on {} (RTP from {})", server_addr, rtp_start_port);
+    eprintln!(
+        "Starting server on {} (RTP from {})",
+        server_addr, rtp_start_port
+    );
 
     let config = ServerConfig {
         port: sip_port,
@@ -287,7 +293,10 @@ async fn test_server_handles_rapid_calls() {
     let local_ip = get_local_ip();
     let server_addr = format!("{}:{}", local_ip, sip_port);
 
-    eprintln!("Starting server on {} (RTP from {})", server_addr, rtp_start_port);
+    eprintln!(
+        "Starting server on {} (RTP from {})",
+        server_addr, rtp_start_port
+    );
 
     let config = ServerConfig {
         port: sip_port,

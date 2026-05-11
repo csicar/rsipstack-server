@@ -6,9 +6,9 @@ use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, Dialog
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::sip as rsip;
 use rsipstack::sip::prelude::HeadersExt;
+use rsipstack::transaction::TransactionReceiver;
 use rsipstack::transport::udp::UdpConnection;
 use rsipstack::transport::TransportLayer;
-use rsipstack::transaction::TransactionReceiver;
 use rsipstack::{EndpointBuilder, Error, Result};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -137,7 +137,9 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         };
 
         let local_addr = SocketAddr::new(local_ip, config.port);
-        let external_addr = config.external_ip.map(|ip| SocketAddr::new(ip, config.port));
+        let external_addr = config
+            .external_ip
+            .map(|ip| SocketAddr::new(ip, config.port));
 
         info!("Binding to {}", local_addr);
         if let Some(ext) = external_addr {

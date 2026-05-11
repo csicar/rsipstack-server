@@ -173,7 +173,9 @@ impl std::fmt::Display for SdpParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SdpParseError::ParseError(e) => write!(f, "SDP parse error: {}", e),
-            SdpParseError::MissingConnectionAddress => write!(f, "Missing connection address in SDP"),
+            SdpParseError::MissingConnectionAddress => {
+                write!(f, "Missing connection address in SDP")
+            }
             SdpParseError::InvalidAddress(addr) => write!(f, "Invalid address in SDP: {}", addr),
             SdpParseError::NoAudioMedia => write!(f, "No audio media in SDP"),
         }
@@ -214,9 +216,18 @@ mod tests {
     fn test_generate_sdp_answer_all_codecs() {
         let ip: IpAddr = "192.168.1.1".parse().unwrap();
         let offered = vec![
-            CodecInfo { payload_type: 111, codec_name: "opus".to_string() },
-            CodecInfo { payload_type: 0, codec_name: "PCMU".to_string() },
-            CodecInfo { payload_type: 8, codec_name: "PCMA".to_string() },
+            CodecInfo {
+                payload_type: 111,
+                codec_name: "opus".to_string(),
+            },
+            CodecInfo {
+                payload_type: 0,
+                codec_name: "PCMU".to_string(),
+            },
+            CodecInfo {
+                payload_type: 8,
+                codec_name: "PCMA".to_string(),
+            },
         ];
         let sdp = generate_sdp_answer(ip, 6000, 123456, &offered);
 
@@ -231,9 +242,10 @@ mod tests {
     #[test]
     fn test_generate_sdp_answer_pcmu_only() {
         let ip: IpAddr = "192.168.1.1".parse().unwrap();
-        let offered = vec![
-            CodecInfo { payload_type: 0, codec_name: "PCMU".to_string() },
-        ];
+        let offered = vec![CodecInfo {
+            payload_type: 0,
+            codec_name: "PCMU".to_string(),
+        }];
         let sdp = generate_sdp_answer(ip, 6000, 123456, &offered);
 
         assert!(sdp.contains("m=audio 6000 RTP/AVP 0\r\n"));
@@ -248,8 +260,14 @@ mod tests {
         let ip: IpAddr = "192.168.1.1".parse().unwrap();
         // Offer includes an unsupported codec
         let offered = vec![
-            CodecInfo { payload_type: 99, codec_name: "G729".to_string() },
-            CodecInfo { payload_type: 0, codec_name: "PCMU".to_string() },
+            CodecInfo {
+                payload_type: 99,
+                codec_name: "G729".to_string(),
+            },
+            CodecInfo {
+                payload_type: 0,
+                codec_name: "PCMU".to_string(),
+            },
         ];
         let sdp = generate_sdp_answer(ip, 6000, 123456, &offered);
 
