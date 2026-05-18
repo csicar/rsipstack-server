@@ -3,6 +3,7 @@
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
 use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer};
 use crate::codec::{create_codec, Codec};
+use anyhow::Context;
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -46,10 +47,12 @@ impl MediaSession {
         rtp_port: u16,
         offer: &SdpOffer,
         cancel_token: CancellationToken,
-    ) -> std::io::Result<Self> {
+    ) -> anyhow::Result<Self> {
         // Bind RTP socket to local interface
         let rtp_addr = SocketAddr::new(bind_ip, rtp_port);
-        let rtp_socket = UdpSocket::bind(rtp_addr).await?;
+        let rtp_socket = UdpSocket::bind(rtp_addr)
+            .await
+            .with_context(|| format!("while trying to bind rtp socket {rtp_addr:?}"))?;
 
         debug!("RTP socket bound to {}", rtp_addr);
 
