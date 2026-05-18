@@ -11,8 +11,8 @@ use tracing::{debug, error, trace, warn};
 
 /// Media session for handling RTP audio
 pub struct MediaSession {
-    /// Local IP address
-    local_ip: IpAddr,
+    /// IP address to advertise in SDP (external IP for NAT, or local IP)
+    advertise_ip: IpAddr,
     /// Local RTP port
     rtp_port: u16,
     /// UDP socket for RTP
@@ -33,20 +33,28 @@ pub struct MediaSession {
 
 impl MediaSession {
     /// Create a new media session
+    ///
+    /// # Arguments
+    /// * `bind_ip` - Local IP address to bind sockets to (must be a local interface)
+    /// * `advertise_ip` - IP address to advertise in SDP (external IP for NAT traversal, or same as bind_ip)
+    /// * `rtp_port` - RTP port number
+    /// * `offer` - Parsed SDP offer from the peer
+    /// * `cancel_token` - Cancellation token for graceful shutdown
     pub async fn new(
-        local_ip: IpAddr,
+        bind_ip: IpAddr,
+        advertise_ip: IpAddr,
         rtp_port: u16,
         offer: &SdpOffer,
         cancel_token: CancellationToken,
     ) -> std::io::Result<Self> {
-        // Bind RTP socket
-        let rtp_addr = SocketAddr::new(local_ip, rtp_port);
+        // Bind RTP socket to local interface
+        let rtp_addr = SocketAddr::new(bind_ip, rtp_port);
         let rtp_socket = UdpSocket::bind(rtp_addr).await?;
 
         debug!("RTP socket bound to {}", rtp_addr);
 
         // Also bind RTCP socket (RTP port + 1) but don't process it yet
-        let rtcp_addr = SocketAddr::new(local_ip, rtp_port + 1);
+        let rtcp_addr = SocketAddr::new(bind_ip, rtp_port + 1);
         match UdpSocket::bind(rtcp_addr).await {
             Ok(_) => debug!("RTCP socket bound to {}", rtcp_addr),
             Err(e) => warn!("Failed to bind RTCP socket {}: {}", rtcp_addr, e),
@@ -56,7 +64,7 @@ impl MediaSession {
         let session_id = rand::random::<u64>();
 
         Ok(Self {
-            local_ip,
+            advertise_ip,
             rtp_port,
             rtp_socket,
             peer_addr,
@@ -71,10 +79,10 @@ impl MediaSession {
     /// Generate SDP answer for this session
     ///
     /// The answer only includes codecs that were both offered by the peer
-    /// and supported by us.
+    /// and supported by us. Uses the advertise_ip for the connection address.
     pub fn generate_sdp_answer(&self) -> String {
         generate_sdp_answer(
-            self.local_ip,
+            self.advertise_ip,
             self.rtp_port,
             self.session_id,
             &self.offered_codecs,
@@ -308,8 +316,10 @@ mod tests {
         let test_port = test_port & !1; // Ensure even port
 
         let cancel_token = CancellationToken::new();
+        let local_ip = "127.0.0.1".parse().unwrap();
         let session = MediaSession::new(
-            "127.0.0.1".parse().unwrap(),
+            local_ip,
+            local_ip, // In tests, bind and advertise are the same
             test_port,
             &offer,
             cancel_token,
@@ -347,8 +357,10 @@ mod tests {
         let test_port = test_port & !1;
 
         let cancel_token = CancellationToken::new();
+        let local_ip = "127.0.0.1".parse().unwrap();
         let session = MediaSession::new(
-            "127.0.0.1".parse().unwrap(),
+            local_ip,
+            local_ip, // In tests, bind and advertise are the same
             test_port,
             &offer,
             cancel_token,
