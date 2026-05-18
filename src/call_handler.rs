@@ -56,10 +56,12 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
 
         // Allocate RTP port and create media session
         let rtp_port = self.state.allocate_rtp_port();
-        let media_ip = self.state.media_ip();
+        let bind_ip = self.state.local_ip;
+        let advertise_ip = self.state.media_ip();
 
         let media_session = match MediaSession::new(
-            media_ip,
+            bind_ip,
+            advertise_ip,
             rtp_port,
             &offer,
             self.dialog.cancel_token().child_token(),
