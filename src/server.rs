@@ -92,6 +92,7 @@ pub struct SipServer<F: AudioHandlerFactory> {
     state: Arc<ServerState>,
     local_addr: SocketAddr,
     handler_factory: Arc<F>,
+    external_addr: SocketAddr,
 }
 
 const SIP_USER_AGENT: &str = concat!("rsipstack-server/", env!("CARGO_PKG_VERSION"));
@@ -171,6 +172,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
             transport_layer,
             state,
             local_addr,
+            external_addr: external_addr.unwrap_or(local_addr),
             handler_factory: Arc::new(handler_factory),
         })
     }
@@ -204,7 +206,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                 user: "server".to_string(),
                 password: None,
             }),
-            host_with_port: local_addr.into(),
+            host_with_port: self.external_addr.into(),
             params: vec![],
             headers: vec![],
         };
