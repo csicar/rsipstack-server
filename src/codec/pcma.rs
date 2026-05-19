@@ -15,8 +15,8 @@ static DECODE_TABLE: OnceLock<[i16; 256]> = OnceLock::new();
 fn get_decode_table() -> &'static [i16; 256] {
     DECODE_TABLE.get_or_init(|| {
         let mut table = [0i16; 256];
-        for i in 0..256 {
-            table[i] = decode_alaw_sample(i as u8);
+        for (i, entry) in table.iter_mut().enumerate() {
+            *entry = decode_alaw_sample(i as u8);
         }
         table
     })
@@ -129,7 +129,7 @@ impl Codec for PcmaCodec {
 
     fn encode(&mut self, samples: &[i16]) -> Vec<u8> {
         // Downsample from 48kHz to 8kHz (take every 6th sample)
-        let mut payload = Vec::with_capacity((samples.len() + 5) / 6);
+        let mut payload = Vec::with_capacity(samples.len().div_ceil(6));
 
         for chunk in samples.chunks(6) {
             // Use the middle sample for better quality

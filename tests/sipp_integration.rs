@@ -88,9 +88,9 @@ fn get_sipp_command() -> Option<String> {
 
 /// Get the local IP address (first non-loopback)
 fn get_local_ip() -> String {
-    for iface in get_if_addrs::get_if_addrs().unwrap() {
+    for iface in if_addrs::get_if_addrs().unwrap() {
         if !iface.is_loopback() {
-            if let get_if_addrs::IfAddr::V4(ref addr) = iface.addr {
+            if let if_addrs::IfAddr::V4(ref addr) = iface.addr {
                 return addr.ip.to_string();
             }
         }

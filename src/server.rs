@@ -382,9 +382,9 @@ impl<F: AudioHandlerFactory> SipServer<F> {
 
 /// Get the first non-loopback network interface IP address
 fn get_first_non_loopback_interface() -> Result<IpAddr> {
-    for iface in get_if_addrs::get_if_addrs()? {
+    for iface in if_addrs::get_if_addrs()? {
         if !iface.is_loopback() {
-            if let get_if_addrs::IfAddr::V4(ref addr) = iface.addr {
+            if let if_addrs::IfAddr::V4(ref addr) = iface.addr {
                 return Ok(IpAddr::V4(addr.ip));
             }
         }
