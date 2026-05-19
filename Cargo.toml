@@ -25,7 +25,7 @@ tracing = "0.1"
 sdp-rs = "0.2"
 rtp-rs = "0.6"
 async-trait = "0.1"
-get_if_addrs = "0.5"
+if-addrs = "0.13"
 rand = "0.8"
 anyhow = "1.0"
 opus = { version = "0.3", optional = true }
