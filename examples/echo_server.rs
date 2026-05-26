@@ -37,9 +37,9 @@ struct Args {
     #[arg(long, default_value = "10000")]
     rtp_start_port: u16,
 
-     /// RTP port range even (exclusive, even number)
-     #[arg(long, default_value = "10100")]
-     rtp_end_port: u16,
+    /// RTP port range end (even number)
+    #[arg(long, default_value = "10098")]
+    rtp_end_port: u16,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info")]
@@ -134,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
         bind_addr: args.bind,
         external_ip: args.external_ip,
         rtp_start_port: args.rtp_start_port,
-        rtp_end_port: args.rtp_end_port
+        rtp_end_port: args.rtp_end_port,
     };
 
     let server = SipServer::new(server_config, EchoHandler::new).await?;

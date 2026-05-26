@@ -27,8 +27,7 @@ pub struct ServerConfig {
     pub external_ip: Option<IpAddr>,
     /// Starting port for RTP media (even number)
     pub rtp_start_port: u16,
-    /// Upper bound for RTP ports (exclusive). RTCP uses rtp_port + 1. Must be an even number.
-    /// If you specify 20000 as upper bound the last RTP port will be 19998 and the last rtcp port will be 19999.
+    /// Last RTP port for RTP media (even number). Keep in mind that RTCP by default uses rtp_end_port + 1.
     pub rtp_end_port: u16,
 }
 
@@ -39,7 +38,7 @@ impl Default for ServerConfig {
             bind_addr: None,
             external_ip: None,
             rtp_start_port: 10000,
-            rtp_end_port: 10100,
+            rtp_end_port: 10098,
         }
     }
 }
@@ -119,10 +118,10 @@ const SIP_USER_AGENT: &str = concat!("rsipstack-server/", env!("CARGO_PKG_VERSIO
 
 fn initialize_rtp_pool(rtp_start_port: u16, rtp_end_port: u16) -> Vec<u16> {
     assert!(
-        rtp_end_port > rtp_start_port,
-        "rtp_end_port must be greater than rtp_start_port"
+        rtp_end_port >= rtp_start_port,
+        "rtp_end_port must be greater than or equal to rtp_start_port"
     );
-    (rtp_start_port..rtp_end_port).step_by(2).collect()
+    (rtp_start_port..=rtp_end_port).step_by(2).collect()
 }
 
 impl<F: AudioHandlerFactory> SipServer<F> {
@@ -440,7 +439,7 @@ mod tests {
 
     #[test]
     fn allocate_reduces_pool() {
-        let state = make_state(10_000, 10_010);
+        let state = make_state(10_000, 10_008);
         assert_eq!(state.rtp_port_pool.lock().unwrap().len(), 5);
         let new_port = state.allocate_rtp_port();
         assert_eq!(new_port, Some(10_008));
@@ -450,7 +449,7 @@ mod tests {
 
     #[test]
     fn free_returns_port() {
-        let state = make_state(10_000, 10_010);
+        let state = make_state(10_000, 10_008);
         let port = state.allocate_rtp_port();
         assert!(!state.rtp_port_pool.lock().unwrap().contains(&10_008));
         state.free_rtp_port(port.unwrap());
@@ -460,7 +459,7 @@ mod tests {
 
     #[test]
     fn exhausted_pool_returns_none() {
-        let state = make_state(10_000, 10_010);
+        let state = make_state(10_000, 10_008);
         for _ in 0..5 {
             let port = state.allocate_rtp_port();
             assert!(port.is_some())
