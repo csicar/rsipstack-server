@@ -91,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let config = ServerConfig {
         port: 5060,
         rtp_start_port: 10000,
+        rtp_end_port: 10098,
         ..Default::default()
     };
 
@@ -142,7 +143,7 @@ You only work with decoded PCM audio samples.
 A complete echo server example is included:
 
 ```bash
-cargo run --example echo_server -- --port 5060 --rtp-start-port 10000
+cargo run --example echo_server -- --port 5060 --rtp-start-port 10000 --rtp-end-port 10098
 ```
 
 ### Testing with sipp
@@ -165,6 +166,7 @@ sipp -sn uac <server-ip>:5060 -m 1
 | `bind_addr` | auto | Bind address (defaults to first non-loopback interface) |
 | `external_ip` | none | External IP for NAT traversal |
 | `rtp_start_port` | 10000 | Starting port for RTP media (even number) |
+| `rtp_end_port` | 10098 | Last RTP port (even number, keep in mind that RTCP per default uses rtp_end_port + 1) |
 
 ## Project Structure
 

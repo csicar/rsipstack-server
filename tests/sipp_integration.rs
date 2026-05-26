@@ -119,6 +119,7 @@ async fn test_echo_server_with_sipp() {
     // Use dedicated ports for this test
     let sip_port = allocate_udp_port();
     let rtp_start_port = allocate_udp_port();
+    let rtp_end_port = rtp_start_port + 100;
 
     let local_ip = get_local_ip();
     let server_addr = format!("{}:{}", local_ip, sip_port);
@@ -134,6 +135,7 @@ async fn test_echo_server_with_sipp() {
         bind_addr: Some(local_ip.parse().unwrap()),
         external_ip: None,
         rtp_start_port,
+        rtp_end_port,
     };
 
     let server = SipServer::new(config, || EchoHandler).await.unwrap();
@@ -211,6 +213,7 @@ async fn test_multiple_concurrent_calls() {
 
     let sip_port = allocate_udp_port();
     let rtp_start_port = allocate_udp_port();
+    let rtp_end_port = rtp_start_port + 100;
 
     let local_ip = get_local_ip();
     let server_addr = format!("{}:{}", local_ip, sip_port);
@@ -225,6 +228,7 @@ async fn test_multiple_concurrent_calls() {
         bind_addr: Some(local_ip.parse().unwrap()),
         external_ip: None,
         rtp_start_port,
+        rtp_end_port
     };
 
     let server = SipServer::new(config, || EchoHandler).await.unwrap();
@@ -289,6 +293,7 @@ async fn test_server_handles_rapid_calls() {
 
     let sip_port = allocate_udp_port();
     let rtp_start_port = allocate_udp_port();
+    let rtp_end_port = rtp_start_port + 100;
 
     let local_ip = get_local_ip();
     let server_addr = format!("{}:{}", local_ip, sip_port);
@@ -303,6 +308,7 @@ async fn test_server_handles_rapid_calls() {
         bind_addr: Some(local_ip.parse().unwrap()),
         external_ip: None,
         rtp_start_port,
+        rtp_end_port
     };
 
     let server = SipServer::new(config, || EchoHandler).await.unwrap();
