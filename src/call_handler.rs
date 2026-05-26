@@ -54,8 +54,16 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             }
         };
 
-        // Allocate RTP port and create media session
-        let rtp_port = self.state.allocate_rtp_port();
+        // Allocate RTP port
+        let Some(rtp_port) = self.state.allocate_rtp_port() else {
+            warn!(dialog_id = %dialog_id, "Failed to allocate RTP port. RTP port pool exhausted.");
+            self.dialog
+                .reject(Some(rsip::StatusCode::ServiceUnavailable), None)?;
+            return Ok(());
+        };
+
+        info!(dialog_id = %dialog_id, rtp_port, "Assigned audio to RTP port");
+
         let bind_ip = self.state.local_ip;
         let advertise_ip = self.state.media_ip();
 
@@ -93,6 +101,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             .accept(Some(headers), Some(sdp_answer.into_bytes()))
         {
             error!(dialog_id = %dialog_id, error = ?e, "Failed to accept call");
+            self.state.free_rtp_port(rtp_port);
             return Ok(());
         }
 
@@ -127,6 +136,8 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
         if let Err(e) = self.dialog.bye().await {
             warn!(dialog_id = %dialog_id, error = ?e, "Failed to send BYE");
         }
+
+        self.state.free_rtp_port(rtp_port);
 
         Ok(())
     }
