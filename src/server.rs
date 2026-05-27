@@ -54,7 +54,6 @@ pub struct ServerState {
 impl ServerState {
     /// Allocate the next available RTP port (returns even port number)
     pub fn allocate_rtp_port(&self) -> Option<u16> {
-        // todo: there might be a more idomatic way to do this than expect
         let rtp_port = self
             .rtp_port_pool
             .lock()
@@ -66,6 +65,7 @@ impl ServerState {
         rtp_port
     }
 
+    /// Add the RTP port back to the pool of available ports
     pub fn free_rtp_port(&self, rtp_port: u16) {
         self.rtp_port_pool
             .lock()
@@ -424,6 +424,26 @@ fn get_first_non_loopback_interface() -> Result<IpAddr> {
     Err(Error::Error("No IPv4 interface found".to_string()))
 }
 
+pub struct RtpPortGuard {
+    server_state: Arc<ServerState>,
+    pub rtp_port: u16,
+}
+
+impl RtpPortGuard {
+    pub fn new(server_state: Arc<ServerState>, rtp_port: u16) -> Self {
+        RtpPortGuard {
+            server_state,
+            rtp_port,
+        }
+    }
+}
+
+impl Drop for RtpPortGuard {
+    fn drop(&mut self) {
+        self.server_state.free_rtp_port(self.rtp_port);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,21 +460,31 @@ mod tests {
     #[test]
     fn allocate_reduces_pool() {
         let state = make_state(10_000, 10_008);
-        assert_eq!(state.rtp_port_pool.lock().unwrap().len(), 5);
+        assert_eq!(
+            *state.rtp_port_pool.lock().unwrap(),
+            vec![10000, 10002, 10004, 10006, 10008]
+        );
         let new_port = state.allocate_rtp_port();
         assert_eq!(new_port, Some(10_008));
-        assert_eq!(state.rtp_port_pool.lock().unwrap().len(), 4);
-        assert!(!state.rtp_port_pool.lock().unwrap().contains(&10_008));
+        assert_eq!(
+            *state.rtp_port_pool.lock().unwrap(),
+            vec![10000, 10002, 10004, 10006]
+        );
     }
 
     #[test]
     fn free_returns_port() {
         let state = make_state(10_000, 10_008);
         let port = state.allocate_rtp_port();
-        assert!(!state.rtp_port_pool.lock().unwrap().contains(&10_008));
+        assert_eq!(
+            *state.rtp_port_pool.lock().unwrap(),
+            vec![10000, 10002, 10004, 10006]
+        );
         state.free_rtp_port(port.unwrap());
-        assert_eq!(state.rtp_port_pool.lock().unwrap().len(), 5);
-        assert!(state.rtp_port_pool.lock().unwrap().contains(&10_008));
+        assert_eq!(
+            *state.rtp_port_pool.lock().unwrap(),
+            vec![10000, 10002, 10004, 10006, 10008]
+        );
     }
 
     #[test]
@@ -465,5 +495,6 @@ mod tests {
             assert!(port.is_some())
         }
         assert!(state.allocate_rtp_port().is_none());
+        assert_eq!(*state.rtp_port_pool.lock().unwrap(), Vec::<u16>::new());
     }
 }

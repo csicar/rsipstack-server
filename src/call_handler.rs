@@ -3,6 +3,7 @@
 use crate::audio::handler::AudioHandler;
 use crate::media::sdp::parse_sdp_offer;
 use crate::media::session::MediaSession;
+use crate::server::RtpPortGuard;
 use crate::server::ServerState;
 use rsipstack::dialog::server_dialog::ServerInviteDialog;
 use rsipstack::sip as rsip;
@@ -62,7 +63,9 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             return Ok(());
         };
 
-        info!(dialog_id = %dialog_id, rtp_port, "Assigned audio to RTP port");
+        let rtp_port_guard = RtpPortGuard::new(self.state.clone(), rtp_port);
+
+        info!(rtp_port_guard.rtp_port, dialog_id = %dialog_id,  "Assigned audio to RTP port");
 
         let bind_ip = self.state.local_ip;
         let advertise_ip = self.state.media_ip();
@@ -70,7 +73,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
         let media_session = match MediaSession::new(
             bind_ip,
             advertise_ip,
-            rtp_port,
+            rtp_port_guard.rtp_port,
             &offer,
             self.dialog.cancel_token().child_token(),
         )
@@ -101,7 +104,6 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             .accept(Some(headers), Some(sdp_answer.into_bytes()))
         {
             error!(dialog_id = %dialog_id, error = ?e, "Failed to accept call");
-            self.state.free_rtp_port(rtp_port);
             return Ok(());
         }
 
@@ -136,8 +138,6 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
         if let Err(e) = self.dialog.bye().await {
             warn!(dialog_id = %dialog_id, error = ?e, "Failed to send BYE");
         }
-
-        self.state.free_rtp_port(rtp_port);
 
         Ok(())
     }
