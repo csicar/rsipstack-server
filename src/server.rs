@@ -2,6 +2,7 @@
 
 use crate::audio::handler::AudioHandler;
 use crate::call_handler::CallHandler;
+use metrics::counter;
 use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::sip as rsip;
@@ -397,6 +398,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                 }
                 DialogState::Terminated(id, reason) => {
                     info!(dialog_id = %id, reason = ?reason, "Call terminated");
+                    counter!("rsipstack_server.calls.terminated", "reason" => format!("{:?}", reason)).increment(1);
                     dialog_layer.remove_dialog(&id);
                 }
                 DialogState::Early(id, _) => {

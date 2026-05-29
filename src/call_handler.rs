@@ -3,8 +3,11 @@
 use crate::audio::handler::AudioHandler;
 use crate::media::sdp::parse_sdp_offer;
 use crate::media::session::MediaSession;
+use crate::metrics::GaugeGuard;
 use crate::server::RtpPortGuard;
 use crate::server::ServerState;
+use metrics::counter;
+use metrics::gauge;
 use rsipstack::dialog::server_dialog::ServerInviteDialog;
 use rsipstack::sip as rsip;
 use rsipstack::Result;
@@ -51,6 +54,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
                 warn!(dialog_id = %dialog_id, error = ?e, "Failed to parse SDP offer");
                 self.dialog
                     .reject(Some(rsip::StatusCode::NotAcceptableHere), None)?;
+                counter!("rsipstack_server.calls.rejected", "reason" => "sdp_offer_invalid").increment(1);
                 return Ok(());
             }
         };
@@ -60,6 +64,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             warn!(dialog_id = %dialog_id, "Failed to allocate RTP port. RTP port pool exhausted.");
             self.dialog
                 .reject(Some(rsip::StatusCode::ServiceUnavailable), None)?;
+            counter!("rsipstack_server.calls.rejected", "reason" => "rtp_port_pool_exhausted").increment(1);
             return Ok(());
         };
 
@@ -108,6 +113,8 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
         }
 
         info!(dialog_id = %dialog_id, "Call accepted, starting audio handler");
+        let _active_calls_guard = GaugeGuard::new(gauge!("rsipstack_server.calls.active"));
+        counter!("rsipstack_server.calls.accepted").increment(1);
 
         // Start the media session and audio handler
         let (audio_in, audio_out) = media_session.start().await;
