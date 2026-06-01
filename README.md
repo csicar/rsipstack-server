@@ -199,3 +199,15 @@ rsipstack-server/
 ## License
 
 MIT
+
+## Metrics
+
+The following metrics are exported using the [`metrics`](https://crates.io/crates/metrics) facade.
+To collect them, register a backend such as [`metrics-exporter-prometheus`](https://crates.io/crates/metrics-exporter-prometheus) in your application.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `rsipstack_server.calls.accepted` | counter | — | Total calls successfully accepted |
+| `rsipstack_server.calls.rejected` | counter | `reason`: `sdp_offer_invalid`, `rtp_port_pool_exhausted`, `media_session_failed` | Calls rejected before being accepted |
+| `rsipstack_server.calls.active` | gauge | — | Currently active calls |
+| `rsipstack_server.calls.terminated` | counter | `reason`: see [`TerminatedReason`](https://docs.rs/rsipstack/latest/rsipstack/dialog/dialog/enum.TerminatedReason.html) | Calls terminated after being accepted |
