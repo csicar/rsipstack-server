@@ -57,7 +57,7 @@ impl AudioHandler for EchoHandler {
 fn allocate_udp_port() -> u16 {
     // Try ports from our counter
     loop {
-        let port = PORT_COUNTER.fetch_add(100, Ordering::SeqCst);
+        let port = PORT_COUNTER.fetch_add(200, Ordering::SeqCst);
         if port > 60000 {
             panic!("Ran out of ports");
         }
