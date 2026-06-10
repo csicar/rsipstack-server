@@ -157,13 +157,18 @@ impl MediaSession {
 
         (audio_in_rx, audio_out_tx)
     }
-
-    /// RTP receive task - receives RTP packets, decodes them, and sends AudioFrames to the channel
+    
+    /// RTP receive task - receives RTP packets, decodes them, and sends AudioFrames to the channel.
+    ///
+    /// Only packets from `expected_peer` are processed. Packets arriving from any
+    /// other source address are dropped with a warning. This prevents audio from zombie
+    /// RTP streams (e.g. a previous call on a reused port) from leaking into the
+    /// current call.
     async fn rtp_receive_task(
         socket: std::sync::Arc<UdpSocket>,
         audio_tx: mpsc::UnboundedSender<AudioFrame>,
         cancel_token: CancellationToken,
-        _expected_peer: SocketAddr,
+        expected_peer: SocketAddr,
         mut codec: Option<Box<dyn Codec>>,
         default_payload_type: u8,
     ) {
@@ -179,42 +184,46 @@ impl MediaSession {
                 result = socket.recv_from(&mut buf) => {
                     match result {
                         Ok((len, addr)) => {
-                            // Only accept packets from the expected peer
-                            // (allow any address for now to handle NAT)
                             trace!(
                                 from = %addr,
                                 len = len,
                                 "Received RTP packet"
                             );
 
-                            if let Some(raw) = parse_rtp_packet(&buf[..len]) {
-                                packet_count += 1;
-                                if packet_count % 500 == 1 {
-                                    debug!(
-                                        count = packet_count,
-                                        seq = raw.sequence,
-                                        ts = raw.timestamp,
-                                        pt = raw.payload_type,
-                                        "RTP receive progress"
-                                    );
-                                }
+                            // Only accept packets from the expected peer
+                            if addr == expected_peer {
+                                if let Some(raw) = parse_rtp_packet(&buf[..len]) {
+                                    packet_count += 1;
+                                    if packet_count % 500 == 1 {
+                                        debug!(
+                                            count = packet_count,
+                                            seq = raw.sequence,
+                                            ts = raw.timestamp,
+                                            pt = raw.payload_type,
+                                            "RTP receive progress"
+                                        );
+                                    }
 
-                                // Decode the payload using codec
-                                let samples = if let Some(ref mut c) = codec {
-                                    c.decode(&raw.payload)
+                                    // Decode the payload using codec
+                                    let samples = if let Some(ref mut c) = codec {
+                                        c.decode(&raw.payload)
+                                    } else {
+                                        // Passthrough: interpret bytes as samples (for testing)
+                                        raw.payload.iter().map(|&b| (b as i16 - 128) * 256).collect()
+                                    };
+
+                                    let frame = AudioFrame { samples };
+
+                                    if audio_tx.send(frame).is_err() {
+                                        debug!("Audio channel closed, stopping receive task");
+                                        break;
+                                    }
                                 } else {
-                                    // Passthrough: interpret bytes as samples (for testing)
-                                    raw.payload.iter().map(|&b| (b as i16 - 128) * 256).collect()
-                                };
-
-                                let frame = AudioFrame { samples };
-
-                                if audio_tx.send(frame).is_err() {
-                                    debug!("Audio channel closed, stopping receive task");
-                                    break;
+                                    warn!(len = len, "Failed to parse RTP packet");
                                 }
                             } else {
-                                warn!(len = len, "Failed to parse RTP packet");
+                                warn!("Received packet from unknown address {}. Skipping the packet.", addr);
+                                continue;
                             }
                         }
                         Err(e) => {
@@ -300,6 +309,81 @@ impl MediaSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_rtp_receive_accepts_expected_peer() {
+        let recv_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let recv_addr = recv_socket.local_addr().unwrap();
+
+        let send_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sender_addr = send_socket.local_addr().unwrap();
+
+        let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<AudioFrame>();
+        let cancel = CancellationToken::new();
+
+        tokio::spawn(MediaSession::rtp_receive_task(
+            std::sync::Arc::new(recv_socket),
+            audio_tx,
+            cancel.clone(),
+            sender_addr,
+            None::<Box<dyn Codec>>,
+            0,
+        ));
+
+        let mut rtp_state = RtpSendState::new(0);
+        let packet = build_rtp_packet(&[128u8; 20], &rtp_state.next());
+        send_socket.send_to(&packet, recv_addr).await.unwrap();
+
+        let frame = tokio::time::timeout(Duration::from_millis(200), audio_rx.recv())
+            .await
+            .expect("timed out waiting for frame")
+            .expect("channel closed");
+
+        assert!(!frame.samples.is_empty());
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn test_rtp_receive_rejects_unexpected_peer() {
+        let recv_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let recv_addr = recv_socket.local_addr().unwrap();
+
+        let expected_sender_addr = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+
+        let unexpected_send_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<AudioFrame>();
+        let cancel = CancellationToken::new();
+
+        tokio::spawn(MediaSession::rtp_receive_task(
+            std::sync::Arc::new(recv_socket),
+            audio_tx,
+            cancel.clone(),
+            expected_sender_addr,
+            None::<Box<dyn Codec>>,
+            0,
+        ));
+
+        let mut rtp_state = RtpSendState::new(0);
+        let packet = build_rtp_packet(&[128u8; 20], &rtp_state.next());
+        unexpected_send_socket
+            .send_to(&packet, recv_addr)
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_millis(200), audio_rx.recv()).await;
+
+        assert!(
+            result.is_err(),
+            "expected timeout but received a frame from unexpected peer"
+        );
+        cancel.cancel();
+    }
 
     #[tokio::test]
     async fn test_media_session_sdp_pcmu_only() {
