@@ -143,7 +143,7 @@ You only work with decoded PCM audio samples.
 A complete echo server example is included:
 
 ```bash
-cargo run --example echo_server -- --port 5060 --first-rtp-port 10000 --last-rtcp-port 10099
+cargo run --example echo_server -- --port 5060 --min-port 10000 --max-port 10099
 ```
 
 ### Testing with sipp

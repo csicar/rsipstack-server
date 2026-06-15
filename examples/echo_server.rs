@@ -36,11 +36,11 @@ struct Args {
 
     /// The first RTP port to use (even number)
     #[arg(long, default_value = "10000")]
-    first_rtp_port: u16,
+    min_port: u16,
 
     /// Last RTCP port to use (uneven number)
     #[arg(long, default_value = "10099")]
-    last_rtcp_port: u16,
+    max_port: u16,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info")]
@@ -127,15 +127,15 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Starting SIP Echo Server");
     info!("SIP port: {}", args.port);
-    info!("RTP start port: {}", args.first_rtp_port);
-    info!("RTP end port: {}", args.last_rtcp_port);
+    info!("RTP start port: {}", args.min_port);
+    info!("RTP end port: {}", args.max_port);
 
     let server_config = ServerConfig {
         port: args.port,
         bind_addr: args.bind,
         external_ip: args.external_ip,
-        min_port: args.first_rtp_port,
-        max_port: args.last_rtcp_port,
+        min_port: args.min_port,
+        max_port: args.max_port,
     };
 
     let server = SipServer::new(server_config, EchoHandler::new).await?;
