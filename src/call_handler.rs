@@ -4,8 +4,8 @@ use crate::audio::handler::AudioHandler;
 use crate::media::rtp::try_allocate_socket_pair;
 use crate::media::sdp::parse_sdp_offer;
 use crate::media::session::MediaSession;
-use crate::metrics::GaugeGuard;
 use crate::media::PeerSocketAddr;
+use crate::metrics::GaugeGuard;
 use crate::server::ServerState;
 use metrics::counter;
 use metrics::gauge;
@@ -55,7 +55,8 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
                 warn!(dialog_id = %dialog_id, error = ?e, "Failed to parse SDP offer");
                 self.dialog
                     .reject(Some(rsip::StatusCode::NotAcceptableHere), None)?;
-                counter!("rsipstack_server.calls.rejected_total", "reason" => "sdp_offer_invalid").increment(1);
+                counter!("rsipstack_server.calls.rejected_total", "reason" => "sdp_offer_invalid")
+                    .increment(1);
                 return Ok(());
             }
         };
@@ -65,11 +66,11 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             try_allocate_socket_pair(&self.state.rtp_port_range, self.state.local_ip_addr).await
         else {
             warn!(dialog_id = %dialog_id, "Failed to find and bind free RTP/RTCP port pair.");
+            counter!("rsipstack_server.calls.rejected_total", "reason" => "rtp_port_pool_exhausted").increment(1);
             self.dialog.reject(
                 Some(rsip::StatusCode::ServiceUnavailable),
                 Some("No free RTP/RTCP port pair available".to_string()),
             )?;
-            counter!("rsipstack_server.calls.rejected_total", "reason" => "rtp_port_pool_exhausted").increment(1);
             return Ok(());
         };
         debug!("RTP/RTCP Socket pair bound to {rtp_socket_pair:?}");
@@ -80,6 +81,8 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             Ok(pair) => pair,
             Err(e) => {
                 warn!(dialog_id = %dialog_id, error = %e, "Unable to connect to to peer {peer_socket_addr:?}");
+                counter!("rsipstack_server.calls.rejected_total", "reason" => "udp_connect_failed")
+                    .increment(1);
                 self.dialog.reject(
                     Some(rsip::StatusCode::ServerInternalError),
                     Some("Unable to connect to RTP peer".to_string()),
