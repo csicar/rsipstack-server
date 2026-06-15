@@ -1,8 +1,10 @@
 //! Call Handler - Handles incoming INVITE requests
 
 use crate::audio::handler::AudioHandler;
+use crate::media::rtp::try_allocate_socket_pair;
 use crate::media::sdp::parse_sdp_offer;
 use crate::media::session::MediaSession;
+use crate::media::PeerSocketAddr;
 use crate::server::ServerState;
 use rsipstack::dialog::server_dialog::ServerInviteDialog;
 use rsipstack::sip as rsip;
@@ -40,8 +42,8 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             Ok(offer) => {
                 debug!(
                     dialog_id = %dialog_id,
-                    peer_addr = %offer.peer_addr,
-                    peer_port = offer.peer_port,
+                    peer_addr = %offer.peer_addr.0,
+                    peer_port = offer.peer_port.0,
                     "Parsed SDP offer"
                 );
                 offer
@@ -54,15 +56,36 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             }
         };
 
-        // Allocate RTP port and create media session
-        let rtp_port = self.state.allocate_rtp_port();
-        let bind_ip = self.state.local_ip;
-        let advertise_ip = self.state.media_ip();
+        // Bind  a free port pair
+        let Some(rtp_socket_pair) =
+            try_allocate_socket_pair(&self.state.rtp_port_range, self.state.local_ip_addr).await
+        else {
+            warn!(dialog_id = %dialog_id, "Failed to find and bind free RTP/RTCP port pair.");
+            self.dialog.reject(
+                Some(rsip::StatusCode::ServiceUnavailable),
+                Some("No free RTP/RTCP port pair available".to_string()),
+            )?;
+            return Ok(());
+        };
+        debug!("RTP/RTCP Socket pair bound to {rtp_socket_pair:?}");
+
+        // Connect so we only accept traffic from a known peer address
+        let peer_socket_addr = PeerSocketAddr::new(offer.peer_addr, offer.peer_port);
+        let connected_socket_pair = match rtp_socket_pair.connect(&peer_socket_addr).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                warn!(dialog_id = %dialog_id, error = %e, "Unable to connect to to peer {peer_socket_addr:?}");
+                self.dialog.reject(
+                    Some(rsip::StatusCode::ServerInternalError),
+                    Some("Unable to connect to RTP peer".to_string()),
+                )?;
+                return Ok(());
+            }
+        };
 
         let media_session = match MediaSession::new(
-            bind_ip,
-            advertise_ip,
-            rtp_port,
+            connected_socket_pair,
+            self.state.media_ip(),
             &offer,
             self.dialog.cancel_token().child_token(),
         )

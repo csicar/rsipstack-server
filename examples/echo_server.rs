@@ -11,8 +11,8 @@
 
 use clap::Parser;
 use rsipstack_server::{
-    async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipHeaders,
-    SipServer,
+    async_trait, mpsc, AdvertiseIpAddr, AudioFrame, AudioHandler, CancellationToken, ServerConfig,
+    SipHeaders, SipServer,
 };
 use std::net::IpAddr;
 use tracing::{debug, info, trace};
@@ -31,11 +31,15 @@ struct Args {
 
     /// External IP address (for NAT traversal)
     #[arg(long)]
-    external_ip: Option<IpAddr>,
+    external_ip: Option<AdvertiseIpAddr>,
 
-    /// RTP port range start (even number)
+    /// The first RTP port to use (even number)
     #[arg(long, default_value = "10000")]
-    rtp_start_port: u16,
+    min_port: u16,
+
+    /// Last RTCP port to use (uneven number)
+    #[arg(long, default_value = "10099")]
+    max_port: u16,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info")]
@@ -122,13 +126,15 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Starting SIP Echo Server");
     info!("SIP port: {}", args.port);
-    info!("RTP start port: {}", args.rtp_start_port);
+    info!("RTP start port: {}", args.min_port);
+    info!("RTP end port: {}", args.max_port);
 
     let server_config = ServerConfig {
         port: args.port,
         bind_addr: args.bind,
         external_ip: args.external_ip,
-        rtp_start_port: args.rtp_start_port,
+        min_port: args.min_port,
+        max_port: args.max_port,
     };
 
     let server = SipServer::new(server_config, EchoHandler::new).await?;

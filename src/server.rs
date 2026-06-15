@@ -2,6 +2,8 @@
 
 use crate::audio::handler::AudioHandler;
 use crate::call_handler::CallHandler;
+use crate::media::rtp::RtpPortRange;
+use crate::media::sdp::AdvertiseIpAddr;
 use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::sip as rsip;
@@ -11,7 +13,6 @@ use rsipstack::transport::udp::UdpConnection;
 use rsipstack::transport::TransportLayer;
 use rsipstack::{EndpointBuilder, Error, Result};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -25,9 +26,11 @@ pub struct ServerConfig {
     /// Bind address (defaults to first non-loopback interface)
     pub bind_addr: Option<IpAddr>,
     /// External IP address for NAT traversal
-    pub external_ip: Option<IpAddr>,
+    pub external_ip: Option<AdvertiseIpAddr>,
     /// Starting port for RTP media (even number)
-    pub rtp_start_port: u16,
+    pub min_port: u16,
+    /// Maximum port to use for RTP media (uneven number). This is the RTCP port.
+    pub max_port: u16,
 }
 
 impl Default for ServerConfig {
@@ -36,28 +39,31 @@ impl Default for ServerConfig {
             port: 5060,
             bind_addr: None,
             external_ip: None,
-            rtp_start_port: 10000,
+            min_port: 10000,
+            max_port: 10099,
         }
     }
 }
 
+/// Newtype wrapper around [IpAddr] denoting this address should be used for binding addresses.
+/// I.e. "What interface should a service be bound to?"
+/// In contrast [crate::AdvertiseIpAddr] is used when offing an address to external system.
+#[derive(Copy, Clone)]
+pub struct LocalIpAddr(pub IpAddr);
+
 /// Shared state for the SIP server
 pub struct ServerState {
-    pub local_ip: IpAddr,
-    pub external_ip: Option<IpAddr>,
-    pub rtp_port_counter: AtomicU16,
+    pub local_ip_addr: LocalIpAddr,
+    pub external_ip: Option<AdvertiseIpAddr>,
+    pub rtp_port_range: RtpPortRange,
     pub cancel_token: CancellationToken,
 }
 
 impl ServerState {
-    /// Allocate the next available RTP port (returns even port number)
-    pub fn allocate_rtp_port(&self) -> u16 {
-        self.rtp_port_counter.fetch_add(2, Ordering::Relaxed)
-    }
-
     /// Get the IP address to use for media (external IP if set, otherwise local)
-    pub fn media_ip(&self) -> IpAddr {
-        self.external_ip.unwrap_or(self.local_ip)
+    pub fn media_ip(&self) -> AdvertiseIpAddr {
+        self.external_ip
+            .unwrap_or(AdvertiseIpAddr(self.local_ip_addr.0))
     }
 }
 
@@ -132,15 +138,15 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         let cancel_token = CancellationToken::new();
 
         // Get local IP address
-        let local_ip = match config.bind_addr {
+        let local_ip = LocalIpAddr(match config.bind_addr {
             Some(addr) => addr,
             None => get_first_non_loopback_interface()?,
-        };
+        });
 
-        let local_addr = SocketAddr::new(local_ip, config.port);
+        let local_addr = SocketAddr::new(local_ip.0, config.port);
         let external_addr = config
             .external_ip
-            .map(|ip| SocketAddr::new(ip, config.port));
+            .map(|ip| SocketAddr::new(ip.0, config.port));
 
         info!("Binding to {}", local_addr);
         if let Some(ext) = external_addr {
@@ -161,9 +167,9 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         transport_layer.add_transport(udp_conn.into());
 
         let state = Arc::new(ServerState {
-            local_ip,
+            local_ip_addr: local_ip,
             external_ip: config.external_ip,
-            rtp_port_counter: AtomicU16::new(config.rtp_start_port),
+            rtp_port_range: RtpPortRange::new(config.min_port, config.max_port)?,
             cancel_token: cancel_token.clone(),
         });
 

@@ -57,7 +57,7 @@ impl AudioHandler for EchoHandler {
 fn allocate_udp_port() -> u16 {
     // Try ports from our counter
     loop {
-        let port = PORT_COUNTER.fetch_add(100, Ordering::SeqCst);
+        let port = PORT_COUNTER.fetch_add(200, Ordering::SeqCst);
         if port > 60000 {
             panic!("Ran out of ports");
         }
@@ -118,22 +118,21 @@ async fn test_echo_server_with_sipp() {
 
     // Use dedicated ports for this test
     let sip_port = allocate_udp_port();
-    let rtp_start_port = allocate_udp_port();
+    let min_port = allocate_udp_port();
+    let max_port = min_port + 99;
 
     let local_ip = get_local_ip();
     let server_addr = format!("{}:{}", local_ip, sip_port);
 
-    eprintln!(
-        "Starting server on {} (RTP from {})",
-        server_addr, rtp_start_port
-    );
+    eprintln!("Starting server on {} (RTP from {})", server_addr, min_port);
 
     // Start the server
     let config = ServerConfig {
         port: sip_port,
         bind_addr: Some(local_ip.parse().unwrap()),
         external_ip: None,
-        rtp_start_port,
+        min_port,
+        max_port,
     };
 
     let server = SipServer::new(config, || EchoHandler).await.unwrap();
@@ -210,21 +209,20 @@ async fn test_multiple_concurrent_calls() {
     };
 
     let sip_port = allocate_udp_port();
-    let rtp_start_port = allocate_udp_port();
+    let min_port = allocate_udp_port();
+    let max_port = min_port + 100;
 
     let local_ip = get_local_ip();
     let server_addr = format!("{}:{}", local_ip, sip_port);
 
-    eprintln!(
-        "Starting server on {} (RTP from {})",
-        server_addr, rtp_start_port
-    );
+    eprintln!("Starting server on {} (RTP from {})", server_addr, min_port);
 
     let config = ServerConfig {
         port: sip_port,
         bind_addr: Some(local_ip.parse().unwrap()),
         external_ip: None,
-        rtp_start_port,
+        min_port,
+        max_port,
     };
 
     let server = SipServer::new(config, || EchoHandler).await.unwrap();
@@ -288,21 +286,20 @@ async fn test_server_handles_rapid_calls() {
     };
 
     let sip_port = allocate_udp_port();
-    let rtp_start_port = allocate_udp_port();
+    let min_port = allocate_udp_port();
+    let max_port = min_port + 99;
 
     let local_ip = get_local_ip();
     let server_addr = format!("{}:{}", local_ip, sip_port);
 
-    eprintln!(
-        "Starting server on {} (RTP from {})",
-        server_addr, rtp_start_port
-    );
+    eprintln!("Starting server on {} (RTP from {})", server_addr, min_port);
 
     let config = ServerConfig {
         port: sip_port,
         bind_addr: Some(local_ip.parse().unwrap()),
         external_ip: None,
-        rtp_start_port,
+        min_port,
+        max_port,
     };
 
     let server = SipServer::new(config, || EchoHandler).await.unwrap();
