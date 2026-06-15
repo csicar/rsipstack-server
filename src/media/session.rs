@@ -57,7 +57,7 @@ impl MediaSession {
     pub fn generate_sdp_answer(&self) -> String {
         generate_sdp_answer(
             self.advertise_ip_addr,
-            self.rtp_socket_pair.0.rtp_port_pair.rtp_port,
+            self.rtp_socket_pair.ports().rtp_port,
             self.session_id,
             &self.offered_codecs,
         )
@@ -77,7 +77,7 @@ impl MediaSession {
         let (audio_in_tx, audio_in_rx) = mpsc::unbounded_channel::<AudioFrame>();
         let (audio_out_tx, audio_out_rx) = mpsc::unbounded_channel::<AudioFrame>();
 
-        let rtp_socket = std::sync::Arc::new(self.rtp_socket_pair.0.rtp_socket);
+        let rtp_socket = std::sync::Arc::new(self.rtp_socket_pair.rtp_socket());
         let cancel_token = self.cancel_token.clone();
 
         // Create codec for receiving (decoding)

@@ -100,7 +100,7 @@ pub(crate) fn build_rtp_packet(payload: &[u8], state: &RtpSendState) -> Vec<u8> 
         .expect("RTP packet building should not fail with valid inputs")
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub struct RtpPortPair {
     pub rtp_port: u16,
     pub rtcp_port: u16,
@@ -203,6 +203,16 @@ impl RtpSocketPair {
 
 #[derive(Debug)]
 pub struct ConnectedSocketPair(pub RtpSocketPair);
+
+impl ConnectedSocketPair {
+    pub fn ports(&self) -> RtpPortPair {
+        self.0.rtp_port_pair
+    }
+
+    pub fn rtp_socket(self) -> UdpSocket {
+        self.0.rtp_socket
+    }
+}
 
 pub async fn try_allocate_socket_pair(
     rtp_port_range: &RtpPortRange,
