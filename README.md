@@ -207,7 +207,10 @@ To collect them, register a backend such as [`metrics-exporter-prometheus`](http
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `rsipstack_server.calls.accepted` | counter | — | Total calls successfully accepted |
-| `rsipstack_server.calls.rejected` | counter | `reason`: `sdp_offer_invalid`, `rtp_port_pool_exhausted`, `media_session_failed` | Calls rejected before being accepted |
+| `rsipstack_server.calls.accepted_total` | counter | — | Total calls successfully accepted |
+| `rsipstack_server.calls.rejected_total` | counter | `reason`: `sdp_offer_invalid`, `rtp_port_pool_exhausted`, `udp_connect_failed` | Calls rejected before being accepted |
 | `rsipstack_server.calls.active` | gauge | — | Currently active calls |
-| `rsipstack_server.calls.terminated` | counter | `reason`: see [`TerminatedReason`](https://docs.rs/rsipstack/latest/rsipstack/dialog/dialog/enum.TerminatedReason.html) | Calls terminated after being accepted |
+| `rsipstack_server.calls.terminated_total` | counter | `reason`: see [`TerminatedReason`](https://docs.rs/rsipstack/latest/rsipstack/dialog/dialog/enum.TerminatedReason.html) | Calls terminated after being accepted |
+| `rsipstack_server.calls.dialog_not_found_total` | counter | — | Requests received for unknown dialogs |
+| `rsipstack_server.ports.allocation_attempts` | histogram | — | Number of attempts before a free port pair was found |
+| `rsipstack_server.ports.allocation_failures` | counter | — | Port allocation failures (pool exhausted) |
