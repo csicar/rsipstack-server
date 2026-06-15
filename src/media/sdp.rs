@@ -122,8 +122,16 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
         codec_name: selected.codec_name,
     })
 }
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct AdvertiseIpAddr(pub IpAddr);
+
+impl std::str::FromStr for AdvertiseIpAddr {
+    type Err = std::net::AddrParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse::<IpAddr>().map(AdvertiseIpAddr)
+    }
+}
 
 /// Generate an SDP answer based on the offered codecs
 ///

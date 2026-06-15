@@ -3,6 +3,7 @@
 use crate::audio::handler::AudioHandler;
 use crate::call_handler::CallHandler;
 use crate::media::rtp::RtpPortRange;
+use crate::media::sdp::AdvertiseIpAddr;
 use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::sip as rsip;
@@ -25,7 +26,7 @@ pub struct ServerConfig {
     /// Bind address (defaults to first non-loopback interface)
     pub bind_addr: Option<IpAddr>,
     /// External IP address for NAT traversal
-    pub external_ip: Option<IpAddr>,
+    pub external_ip: Option<AdvertiseIpAddr>,
     /// Starting port for RTP media (even number)
     pub min_port: u16,
     /// Maximum port to use for RTP media (uneven number). This is the RTCP port.
@@ -50,15 +51,15 @@ pub struct LocalIpAddr(pub IpAddr);
 /// Shared state for the SIP server
 pub struct ServerState {
     pub local_ip_addr: LocalIpAddr,
-    pub external_ip: Option<IpAddr>,
+    pub external_ip: Option<AdvertiseIpAddr>,
     pub rtp_port_range: RtpPortRange,
     pub cancel_token: CancellationToken,
 }
 
 impl ServerState {
     /// Get the IP address to use for media (external IP if set, otherwise local)
-    pub fn media_ip(&self) -> IpAddr {
-        self.external_ip.unwrap_or(self.local_ip_addr.0)
+    pub fn media_ip(&self) -> AdvertiseIpAddr {
+        self.external_ip.unwrap_or(AdvertiseIpAddr(self.local_ip_addr.0))
     }
 }
 
@@ -141,7 +142,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         let local_addr = SocketAddr::new(local_ip.0, config.port);
         let external_addr = config
             .external_ip
-            .map(|ip| SocketAddr::new(ip, config.port));
+            .map(|ip| SocketAddr::new(ip.0, config.port));
 
         info!("Binding to {}", local_addr);
         if let Some(ext) = external_addr {

@@ -13,6 +13,7 @@ use clap::Parser;
 use rsipstack_server::{
     async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipHeaders,
     SipServer,
+    AdvertiseIpAddr
 };
 use std::net::IpAddr;
 use tracing::{debug, info, trace};
@@ -31,7 +32,7 @@ struct Args {
 
     /// External IP address (for NAT traversal)
     #[arg(long)]
-    external_ip: Option<IpAddr>,
+    external_ip: Option<AdvertiseIpAddr>,
 
     /// The first RTP port to use (even number)
     #[arg(long, default_value = "10000")]

@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(frame.samples, vec![100, 200, 300]);
     }
 
-    mod maybe_find_port_pair {
+    mod try_allocate_socket_pair {
         use std::net::{IpAddr, Ipv4Addr};
 
         use super::*;

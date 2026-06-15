@@ -3,7 +3,6 @@
 use crate::audio::handler::AudioHandler;
 use crate::media::rtp::try_allocate_socket_pair;
 use crate::media::sdp::parse_sdp_offer;
-use crate::media::sdp::AdvertiseIpAddr;
 use crate::media::session::MediaSession;
 use crate::media::PeerSocketAddr;
 use crate::server::ServerState;
@@ -84,11 +83,9 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             }
         };
 
-        let advertise_ip = AdvertiseIpAddr(self.state.media_ip());
-
         let media_session = match MediaSession::new(
             connected_socket_pair,
-            advertise_ip,
+            self.state.media_ip(),
             &offer,
             self.dialog.cancel_token().child_token(),
         )
