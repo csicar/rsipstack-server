@@ -266,7 +266,9 @@ mod tests {
 
     use crate::{
         media::{
-            PeerSocketAddr, rtp::{RtpPortRange, maybe_find_port_pair}, sdp::{PeerIpAddr, PeerPort}
+            rtp::{try_allocate_socket_pair, RtpPortRange},
+            sdp::{PeerIpAddr, PeerPort},
+            PeerSocketAddr,
         },
         server::LocalIpAddr,
     };
@@ -295,7 +297,7 @@ mod tests {
         let test_port = test_port & !1; // Ensure even port
         let rtp_port_range = RtpPortRange::new(test_port, test_port + 1).unwrap();
         let local_ip_addr = LocalIpAddr(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-        let port_pair = maybe_find_port_pair(&rtp_port_range, local_ip_addr)
+        let port_pair = try_allocate_socket_pair(&rtp_port_range, local_ip_addr)
             .await
             .unwrap()
             .connect(&peer_socket_addr)
@@ -350,7 +352,7 @@ mod tests {
 
         let rtp_port_range = RtpPortRange::new(test_port, test_port + 1).unwrap();
         let local_ip_addr = LocalIpAddr(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-        let port_pair = maybe_find_port_pair(&rtp_port_range, local_ip_addr)
+        let port_pair = try_allocate_socket_pair(&rtp_port_range, local_ip_addr)
             .await
             .unwrap()
             .connect(&peer_socket_addr)

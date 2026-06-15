@@ -2,7 +2,7 @@
 
 use std::{
     io,
-    net::{SocketAddr},
+    net::SocketAddr,
     sync::atomic::{AtomicU16, Ordering::Relaxed},
 };
 
@@ -109,7 +109,6 @@ pub struct RtpPortRange {
     first_rtp_port: u16,
     last_rtp_port: u16,
     current_rtp_port: AtomicU16,
-    port_pair_count_total: u16,
 }
 
 impl RtpPortRange {
@@ -123,7 +122,7 @@ impl RtpPortRange {
         if !min_port.is_multiple_of(2) {
             warn!("RFC 3550 recommends to use an even port number for RTP. min_port={min_port}");
         };
-        let last_rtp_port = if max_port.is_multiple_of(2){
+        let last_rtp_port = if max_port.is_multiple_of(2) {
             let last_rtp_port = max_port - 2;
             warn!(
                 "RFC 3550 recommends to use an uneven port number for RTCP. max_port={max_port}. The last
@@ -136,13 +135,13 @@ impl RtpPortRange {
         Ok(RtpPortRange {
             first_rtp_port: min_port,
             last_rtp_port,
-            port_pair_count_total: (last_rtp_port - min_port) / 2 + 1,
             current_rtp_port: AtomicU16::new(min_port),
         })
     }
 
     pub fn next_port_pair(&self) -> RtpPortPair {
         // This cannot result in a deadlock because one thread always makes progress
+        // TODO: try out `try_update`
         loop {
             let current_port = self.current_rtp_port.load(Relaxed);
             let next_port = if current_port + 2 > self.last_rtp_port {
@@ -164,7 +163,7 @@ impl RtpPortRange {
     }
 
     pub fn capacity(&self) -> u16 {
-        self.port_pair_count_total
+        (self.last_rtp_port - self.first_rtp_port) / 2 + 1
     }
 }
 
@@ -184,38 +183,36 @@ impl RtpSocketPair {
         self.rtcp_socket.connect(&peer_socket_addr.0).await?;
         Ok(ConnectedSocketPair(self))
     }
+
+    async fn new(rtp_port_pair: RtpPortPair, local_ip_addr: LocalIpAddr) -> Option<Self> {
+        let rtp_addr = SocketAddr::new(local_ip_addr.0, rtp_port_pair.rtp_port);
+        let Ok(rtp_socket) = UdpSocket::bind(rtp_addr).await else {
+            return None;
+        };
+        let rtcp_addr = SocketAddr::new(local_ip_addr.0, rtp_port_pair.rtcp_port);
+        let Ok(rtcp_socket) = UdpSocket::bind(rtcp_addr).await else {
+            return None;
+        };
+        Some(RtpSocketPair {
+            rtp_port_pair,
+            rtp_socket,
+            rtcp_socket,
+        })
+    }
 }
 
 #[derive(Debug)]
 pub struct ConnectedSocketPair(pub RtpSocketPair);
 
-async fn maybe_bind_socket_pair(
-    rtp_port_pair: RtpPortPair,
-    local_ip_addr: LocalIpAddr,
-) -> Option<RtpSocketPair> {
-    let rtp_addr = SocketAddr::new(local_ip_addr.0, rtp_port_pair.rtp_port);
-    let Ok(rtp_socket) = UdpSocket::bind(rtp_addr).await else {
-        return None;
-    };
-    let rtcp_addr = SocketAddr::new(local_ip_addr.0, rtp_port_pair.rtcp_port);
-    let Ok(rtcp_socket) = UdpSocket::bind(rtcp_addr).await else {
-        return None;
-    };
-    Some(RtpSocketPair {
-        rtp_port_pair,
-        rtp_socket,
-        rtcp_socket,
-    })
-}
-
-pub async fn maybe_find_port_pair(
+pub async fn try_allocate_socket_pair(
     rtp_port_range: &RtpPortRange,
     local_ip_addr: LocalIpAddr,
 ) -> Option<RtpSocketPair> {
+    // TODO: metrics
     for i in 0..rtp_port_range.capacity() {
         let port_pair = rtp_port_range.next_port_pair();
         trace!("Attempting to bind to port pair {:?}", port_pair);
-        if let Some(socket_pair) = maybe_bind_socket_pair(port_pair, local_ip_addr).await {
+        if let Some(socket_pair) = RtpSocketPair::new(port_pair, local_ip_addr).await {
             debug!(
                 "Found free socket pair {socket_pair:?} after {} attempts",
                 i + 1
@@ -297,7 +294,7 @@ mod tests {
                 );
             }
             let rtp_port_range = RtpPortRange::new(10100, 10105).unwrap();
-            let free_port_pair = maybe_find_port_pair(&rtp_port_range, local_ip_addr)
+            let free_port_pair = try_allocate_socket_pair(&rtp_port_range, local_ip_addr)
                 .await
                 .unwrap();
             let target_rtp_socket = SocketAddr::new(local_ip_addr.0, 10104);
@@ -324,7 +321,7 @@ mod tests {
                 );
             }
             let rtp_port_range = RtpPortRange::new(10400, 10405).unwrap();
-            let free_port_pair = maybe_find_port_pair(&rtp_port_range, local_ip_addr).await;
+            let free_port_pair = try_allocate_socket_pair(&rtp_port_range, local_ip_addr).await;
             assert!(free_port_pair.is_none());
         }
 
@@ -336,7 +333,7 @@ mod tests {
                 .unwrap();
 
             let rtp_port_range = RtpPortRange::new(10500, 10503).unwrap();
-            let free_port_pair = maybe_find_port_pair(&rtp_port_range, local_ip_addr)
+            let free_port_pair = try_allocate_socket_pair(&rtp_port_range, local_ip_addr)
                 .await
                 .unwrap();
             let target_rtp_socket = SocketAddr::new(local_ip_addr.0, 10502);

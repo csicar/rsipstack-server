@@ -1,9 +1,9 @@
 //! Call Handler - Handles incoming INVITE requests
 
 use crate::audio::handler::AudioHandler;
-use crate::media::rtp::maybe_find_port_pair;
-use crate::media::sdp::AdvertiseIpAddr;
+use crate::media::rtp::try_allocate_socket_pair;
 use crate::media::sdp::parse_sdp_offer;
+use crate::media::sdp::AdvertiseIpAddr;
 use crate::media::session::MediaSession;
 use crate::media::PeerSocketAddr;
 use crate::server::ServerState;
@@ -59,7 +59,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
 
         // Bind  a free port pair
         let Some(rtp_socket_pair) =
-            maybe_find_port_pair(&self.state.rtp_port_range, self.state.local_ip_addr).await
+            try_allocate_socket_pair(&self.state.rtp_port_range, self.state.local_ip_addr).await
         else {
             warn!(dialog_id = %dialog_id, "Failed to find and bind free RTP/RTCP port pair.");
             self.dialog.reject(

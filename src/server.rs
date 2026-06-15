@@ -12,7 +12,7 @@ use rsipstack::transport::udp::UdpConnection;
 use rsipstack::transport::TransportLayer;
 use rsipstack::{EndpointBuilder, Error, Result};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc};
+use std::sync::Arc;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
