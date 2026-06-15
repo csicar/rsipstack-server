@@ -50,8 +50,8 @@ mod audio;
 mod call_handler;
 pub mod codec;
 mod media;
-mod server;
 mod metrics;
+mod server;
 
 // Re-export public API
 pub use audio::handler::{AudioHandler, SipHeaders};

@@ -281,7 +281,8 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                             }
                             None => {
                                 info!("Dialog not found for in-dialog request");
-                                counter!("rsipstack_server.calls.dialog_not_found_total").increment(1);
+                                counter!("rsipstack_server.calls.dialog_not_found_total")
+                                    .increment(1);
                                 tx.reply(rsip::StatusCode::CallTransactionDoesNotExist)
                                     .await?;
                                 continue;
