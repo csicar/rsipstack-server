@@ -164,6 +164,7 @@ impl RtpPortRange {
     }
 
     pub fn capacity(&self) -> u16 {
+        // TODO: add metric for capacity?
         (self.last_rtp_port - self.first_rtp_port) / 2 + 1
     }
 }
