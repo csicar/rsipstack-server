@@ -5,7 +5,7 @@ use crate::media::rtp::try_allocate_socket_pair;
 use crate::media::sdp::parse_sdp_offer;
 use crate::media::session::MediaSession;
 use crate::media::PeerSocketAddr;
-use crate::metrics::GaugeGuard;
+use crate::metrics::ScopedGauge;
 use crate::server::ServerState;
 use metrics::counter;
 use metrics::gauge;
@@ -118,7 +118,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
         }
 
         info!(dialog_id = %dialog_id, "Call accepted, starting audio handler");
-        let _active_calls_guard = GaugeGuard::new(gauge!("rsipstack_server.calls.active"));
+        let _active_calls_guard = ScopedGauge::new(gauge!("rsipstack_server.calls.active"));
         counter!("rsipstack_server.calls.accepted_total").increment(1);
 
         // Start the media session and audio handler

@@ -1,15 +1,15 @@
-pub struct GaugeGuard {
+pub struct ScopedGauge {
     gauge: metrics::Gauge,
 }
 
-impl GaugeGuard {
+impl ScopedGauge {
     pub fn new(gauge: metrics::Gauge) -> Self {
         gauge.increment(1);
-        GaugeGuard { gauge }
+        ScopedGauge { gauge }
     }
 }
 
-impl Drop for GaugeGuard {
+impl Drop for ScopedGauge {
     fn drop(&mut self) {
         self.gauge.decrement(1);
     }
