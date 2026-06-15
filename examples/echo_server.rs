@@ -11,9 +11,8 @@
 
 use clap::Parser;
 use rsipstack_server::{
-    async_trait, mpsc, AudioFrame, AudioHandler, CancellationToken, ServerConfig, SipHeaders,
-    SipServer,
-    AdvertiseIpAddr
+    async_trait, mpsc, AdvertiseIpAddr, AudioFrame, AudioHandler, CancellationToken, ServerConfig,
+    SipHeaders, SipServer,
 };
 use std::net::IpAddr;
 use tracing::{debug, info, trace};

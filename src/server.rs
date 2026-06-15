@@ -62,7 +62,8 @@ pub struct ServerState {
 impl ServerState {
     /// Get the IP address to use for media (external IP if set, otherwise local)
     pub fn media_ip(&self) -> AdvertiseIpAddr {
-        self.external_ip.unwrap_or(AdvertiseIpAddr(self.local_ip_addr.0))
+        self.external_ip
+            .unwrap_or(AdvertiseIpAddr(self.local_ip_addr.0))
     }
 }
 

@@ -55,8 +55,8 @@ mod server;
 // Re-export public API
 pub use audio::handler::{AudioHandler, SipHeaders};
 pub use media::rtp::AudioFrame;
-pub use server::{ServerConfig, ServerState, SipServer};
 pub use media::sdp::AdvertiseIpAddr;
+pub use server::{ServerConfig, ServerState, SipServer};
 
 // Re-export useful types from dependencies
 pub use async_trait::async_trait;
