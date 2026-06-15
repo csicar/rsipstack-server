@@ -311,9 +311,7 @@ mod tests {
             local_ip, // In tests, bind and advertise are the same
             &offer,
             cancel_token,
-        )
-        .await
-        .unwrap();
+        );
 
         let sdp = session.generate_sdp_answer();
         assert!(sdp.contains(&format!("m=audio {}", test_port)));
@@ -364,9 +362,7 @@ mod tests {
             AdvertiseIpAddr(local_ip_addr.0), // In tests, bind and advertise are the same
             &offer,
             cancel_token,
-        )
-        .await
-        .unwrap();
+        );
 
         let sdp = session.generate_sdp_answer();
         // Should contain both offered codecs
