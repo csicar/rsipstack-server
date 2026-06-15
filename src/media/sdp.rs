@@ -9,11 +9,23 @@ pub struct CodecInfo {
     pub codec_name: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PeerPort(pub u16);
+
+#[derive(Debug, Clone, Copy)]
+pub struct PeerIpAddr(pub IpAddr);
+
+impl std::fmt::Display for PeerIpAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Parsed SDP offer information
 #[derive(Debug, Clone)]
 pub struct SdpOffer {
-    pub peer_addr: IpAddr,
-    pub peer_port: u16,
+    pub peer_addr: PeerIpAddr,
+    pub peer_port: PeerPort,
     /// All codecs offered, in preference order
     pub codecs: Vec<CodecInfo>,
     /// The selected codec (first mutually supported codec)
@@ -44,14 +56,16 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
         .ok_or(SdpParseError::NoAudioMedia)?;
 
     // Get connection address - prefer media-level, fall back to session-level
-    let peer_addr = audio_media
-        .connections
-        .first()
-        .or(sdp.connection.as_ref())
-        .map(|c| c.connection_address.base)
-        .ok_or(SdpParseError::MissingConnectionAddress)?;
+    let peer_addr = PeerIpAddr(
+        audio_media
+            .connections
+            .first()
+            .or(sdp.connection.as_ref())
+            .map(|c| c.connection_address.base)
+            .ok_or(SdpParseError::MissingConnectionAddress)?,
+    );
 
-    let peer_port = audio_media.media.port;
+    let peer_port = PeerPort(audio_media.media.port);
 
     // Parse all offered payload types
     let payload_types: Vec<u8> = audio_media
@@ -108,12 +122,14 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
         codec_name: selected.codec_name,
     })
 }
+#[derive(Copy, Clone)]
+pub struct AdvertiseIpAddr(pub IpAddr);
 
 /// Generate an SDP answer based on the offered codecs
 ///
 /// Only includes codecs that were both offered and are supported by us.
 pub fn generate_sdp_answer(
-    local_ip: IpAddr,
+    advertise_ip_addr: AdvertiseIpAddr,
     rtp_port: u16,
     session_id: u64,
     offered_codecs: &[CodecInfo],
@@ -155,7 +171,7 @@ pub fn generate_sdp_answer(
          m=audio {} RTP/AVP {}\r\n\
          {}a=ptime:20\r\n\
          a=sendrecv\r\n",
-        session_id, local_ip, local_ip, rtp_port, pt_list, rtpmap_lines
+        session_id, advertise_ip_addr.0, advertise_ip_addr.0, rtp_port, pt_list, rtpmap_lines
     )
 }
 
@@ -186,6 +202,8 @@ impl std::error::Error for SdpParseError {}
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::*;
 
     #[test]
@@ -201,7 +219,7 @@ mod tests {
 
         let offer = parse_sdp_offer(sdp).unwrap();
         assert_eq!(offer.peer_addr.to_string(), "192.168.1.100");
-        assert_eq!(offer.peer_port, 5000);
+        assert_eq!(offer.peer_port.0, 5000);
         assert_eq!(offer.payload_type, 0);
         assert_eq!(offer.codec_name, "PCMU");
         // Should have both codecs
@@ -214,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_generate_sdp_answer_all_codecs() {
-        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        let ip: AdvertiseIpAddr = AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
         let offered = vec![
             CodecInfo {
                 payload_type: 111,
@@ -241,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_generate_sdp_answer_pcmu_only() {
-        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        let ip: AdvertiseIpAddr = AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
         let offered = vec![CodecInfo {
             payload_type: 0,
             codec_name: "PCMU".to_string(),
@@ -257,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_generate_sdp_answer_filters_unsupported() {
-        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        let ip: AdvertiseIpAddr = AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
         // Offer includes an unsupported codec
         let offered = vec![
             CodecInfo {
@@ -292,7 +310,7 @@ mod tests {
 
         let offer = parse_sdp_offer(sdp).unwrap();
         assert_eq!(offer.peer_addr.to_string(), "192.168.1.100");
-        assert_eq!(offer.peer_port, 5000);
+        assert_eq!(offer.peer_port.0, 5000);
         assert_eq!(offer.payload_type, 111);
         assert_eq!(offer.codec_name, "opus");
     }
@@ -310,7 +328,7 @@ mod tests {
 
         let offer = parse_sdp_offer(sdp).unwrap();
         assert_eq!(offer.peer_addr.to_string(), "10.0.0.50");
-        assert_eq!(offer.peer_port, 4000);
+        assert_eq!(offer.peer_port.0, 4000);
         assert_eq!(offer.payload_type, 111);
         assert_eq!(offer.codec_name, "opus");
     }
@@ -329,7 +347,7 @@ mod tests {
                    a=rtpmap:0 PCMU/8000\r\n";
 
         let offer = parse_sdp_offer(sdp).unwrap();
-        assert_eq!(offer.peer_port, 5000);
+        assert_eq!(offer.peer_port.0, 5000);
         assert_eq!(offer.payload_type, 96);
         assert_eq!(offer.codec_name, "opus");
     }
@@ -360,7 +378,7 @@ mod tests {
 
         let offer = parse_sdp_offer(sdp).unwrap();
         assert_eq!(offer.peer_addr.to_string(), "12.22.0.39");
-        assert_eq!(offer.peer_port, 53264);
+        assert_eq!(offer.peer_port.0, 53264);
         // Should select opus (PT 115) as it's first and we support it
         assert_eq!(offer.payload_type, 115);
         assert_eq!(offer.codec_name, "opus");

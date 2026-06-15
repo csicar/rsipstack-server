@@ -2,6 +2,7 @@
 
 use crate::audio::handler::AudioHandler;
 use crate::call_handler::CallHandler;
+use crate::media::rtp::RtpPortRange;
 use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::sip as rsip;
@@ -11,7 +12,7 @@ use rsipstack::transport::udp::UdpConnection;
 use rsipstack::transport::TransportLayer;
 use rsipstack::{EndpointBuilder, Error, Result};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -26,9 +27,9 @@ pub struct ServerConfig {
     /// External IP address for NAT traversal
     pub external_ip: Option<IpAddr>,
     /// Starting port for RTP media (even number)
-    pub rtp_start_port: u16,
-    /// Last RTP port for RTP media (even number). Keep in mind that RTCP by default uses rtp_end_port + 1.
-    pub rtp_end_port: u16,
+    pub min_port: u16,
+    /// Maximum port to use for RTP media (uneven number). This is the RTCP port.
+    pub max_port: u16,
 }
 
 impl Default for ServerConfig {
@@ -37,46 +38,27 @@ impl Default for ServerConfig {
             port: 5060,
             bind_addr: None,
             external_ip: None,
-            rtp_start_port: 10000,
-            rtp_end_port: 10098,
+            min_port: 10000,
+            max_port: 10099,
         }
     }
 }
 
+#[derive(Copy, Clone)]
+pub struct LocalIpAddr(pub IpAddr);
+
 /// Shared state for the SIP server
 pub struct ServerState {
-    pub local_ip: IpAddr,
+    pub local_ip_addr: LocalIpAddr,
     pub external_ip: Option<IpAddr>,
-    pub rtp_port_pool: Mutex<Vec<u16>>,
+    pub rtp_port_range: RtpPortRange,
     pub cancel_token: CancellationToken,
 }
 
 impl ServerState {
-    /// Allocate the next available RTP port (returns even port number)
-    pub fn allocate_rtp_port(&self) -> Option<u16> {
-        let rtp_port = self
-            .rtp_port_pool
-            .lock()
-            .expect("rtp port pool lock poisoned")
-            .pop();
-        if let Some(port) = rtp_port {
-            debug!("Allocated rtp port {}", port)
-        }
-        rtp_port
-    }
-
-    /// Add the RTP port back to the pool of available ports
-    pub fn free_rtp_port(&self, rtp_port: u16) {
-        self.rtp_port_pool
-            .lock()
-            .expect("rtp port pool lock poisoned")
-            .push(rtp_port);
-        debug!("Freed rtp port {}", rtp_port)
-    }
-
     /// Get the IP address to use for media (external IP if set, otherwise local)
     pub fn media_ip(&self) -> IpAddr {
-        self.external_ip.unwrap_or(self.local_ip)
+        self.external_ip.unwrap_or(self.local_ip_addr.0)
     }
 }
 
@@ -116,14 +98,6 @@ pub struct SipServer<F: AudioHandlerFactory> {
 
 const SIP_USER_AGENT: &str = concat!("rsipstack-server/", env!("CARGO_PKG_VERSION"));
 
-fn initialize_rtp_pool(rtp_start_port: u16, rtp_end_port: u16) -> Vec<u16> {
-    assert!(
-        rtp_end_port >= rtp_start_port,
-        "rtp_end_port must be greater than or equal to rtp_start_port"
-    );
-    (rtp_start_port..=rtp_end_port).step_by(2).collect()
-}
-
 impl<F: AudioHandlerFactory> SipServer<F> {
     /// Create a new SIP server with the given configuration and audio handler factory.
     ///
@@ -159,12 +133,12 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         let cancel_token = CancellationToken::new();
 
         // Get local IP address
-        let local_ip = match config.bind_addr {
+        let local_ip = LocalIpAddr(match config.bind_addr {
             Some(addr) => addr,
             None => get_first_non_loopback_interface()?,
-        };
+        });
 
-        let local_addr = SocketAddr::new(local_ip, config.port);
+        let local_addr = SocketAddr::new(local_ip.0, config.port);
         let external_addr = config
             .external_ip
             .map(|ip| SocketAddr::new(ip, config.port));
@@ -188,12 +162,9 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         transport_layer.add_transport(udp_conn.into());
 
         let state = Arc::new(ServerState {
-            local_ip,
+            local_ip_addr: local_ip,
             external_ip: config.external_ip,
-            rtp_port_pool: Mutex::new(initialize_rtp_pool(
-                config.rtp_start_port,
-                config.rtp_end_port,
-            )),
+            rtp_port_range: RtpPortRange::new(config.min_port, config.max_port)?,
             cancel_token: cancel_token.clone(),
         });
 
@@ -422,79 +393,4 @@ fn get_first_non_loopback_interface() -> Result<IpAddr> {
         }
     }
     Err(Error::Error("No IPv4 interface found".to_string()))
-}
-
-pub struct RtpPortGuard {
-    server_state: Arc<ServerState>,
-    pub rtp_port: u16,
-}
-
-impl RtpPortGuard {
-    pub fn new(server_state: Arc<ServerState>, rtp_port: u16) -> Self {
-        RtpPortGuard {
-            server_state,
-            rtp_port,
-        }
-    }
-}
-
-impl Drop for RtpPortGuard {
-    fn drop(&mut self) {
-        self.server_state.free_rtp_port(self.rtp_port);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_state(start: u16, end: u16) -> ServerState {
-        ServerState {
-            local_ip: "127.0.0.1".parse().unwrap(),
-            external_ip: None,
-            rtp_port_pool: Mutex::new(initialize_rtp_pool(start, end)),
-            cancel_token: CancellationToken::new(),
-        }
-    }
-
-    #[test]
-    fn allocate_reduces_pool() {
-        let state = make_state(10_000, 10_008);
-        assert_eq!(
-            *state.rtp_port_pool.lock().unwrap(),
-            vec![10000, 10002, 10004, 10006, 10008]
-        );
-        let new_port = state.allocate_rtp_port();
-        assert_eq!(new_port, Some(10_008));
-        assert_eq!(
-            *state.rtp_port_pool.lock().unwrap(),
-            vec![10000, 10002, 10004, 10006]
-        );
-    }
-
-    #[test]
-    fn free_returns_port() {
-        let state = make_state(10_000, 10_008);
-        let port = state.allocate_rtp_port();
-        assert_eq!(
-            *state.rtp_port_pool.lock().unwrap(),
-            vec![10000, 10002, 10004, 10006]
-        );
-        state.free_rtp_port(port.unwrap());
-        assert_eq!(
-            *state.rtp_port_pool.lock().unwrap(),
-            vec![10000, 10002, 10004, 10006, 10008]
-        );
-    }
-
-    #[test]
-    fn exhausted_pool_returns_none() {
-        let state = make_state(10_000, 10_008);
-        for _ in 0..5 {
-            let port = state.allocate_rtp_port();
-            assert!(port.is_some())
-        }
-        assert!(state.allocate_rtp_port().is_none());
-        assert_eq!(*state.rtp_port_pool.lock().unwrap(), Vec::<u16>::new());
-    }
 }
