@@ -45,6 +45,9 @@ impl Default for ServerConfig {
     }
 }
 
+/// Newtype wrapper around [IpAddr] denoting this address should be used for binding addresses.
+/// I.e. "What interface should a service be bound to?"
+/// In contrast [crate::AdvertiseIpAddr] is used when offing an address to external system.
 #[derive(Copy, Clone)]
 pub struct LocalIpAddr(pub IpAddr);
 

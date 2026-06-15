@@ -122,6 +122,10 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
         codec_name: selected.codec_name,
     })
 }
+
+/// Newtype wrapper around [IpAddr] denoting this address should be used for sdp / rtp offerings.
+/// I.e. "How can calling sip phones find this service?"
+/// In contrast [crate::server::LocalIpAddr] is used to bind ports.
 #[derive(Copy, Clone, Debug)]
 pub struct AdvertiseIpAddr(pub IpAddr);
 
