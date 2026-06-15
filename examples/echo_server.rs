@@ -33,11 +33,11 @@ struct Args {
     #[arg(long)]
     external_ip: Option<IpAddr>,
 
-    /// The first  
+    /// The first RTP port to use 
     #[arg(long, default_value = "10000")]
     first_rtp_port: u16,
 
-    /// Last RTCP port (uneven number)
+    /// Last RTCP port to use (uneven number)
     #[arg(long, default_value = "10099")]
     last_rtcp_port: u16,
 
