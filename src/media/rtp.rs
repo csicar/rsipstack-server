@@ -6,6 +6,7 @@ use std::{
     sync::atomic::{AtomicU16, Ordering::Relaxed},
 };
 
+use metrics::{counter, histogram};
 use rsipstack::Error::Error;
 use rtp_rs::RtpReader;
 use tokio::net::UdpSocket;
@@ -218,18 +219,24 @@ pub async fn try_allocate_socket_pair(
     rtp_port_range: &RtpPortRange,
     local_ip_addr: LocalIpAddr,
 ) -> Option<RtpSocketPair> {
-    // TODO: metrics
-    for i in 0..rtp_port_range.capacity() {
+    for num_attempts in 0..rtp_port_range.capacity() {
         let port_pair = rtp_port_range.next_port_pair();
         trace!("Attempting to bind to port pair {:?}", port_pair);
         if let Some(socket_pair) = RtpSocketPair::new(port_pair, local_ip_addr).await {
             debug!(
                 "Found free socket pair {socket_pair:?} after {} attempts",
-                i + 1
+                num_attempts + 1
             );
+            histogram!(
+                unit: metrics::Unit::Count,
+                description: "Number of attempts before free port pair was found",
+                "rsipstack_server.ports.allocation_attempts"
+            )
+            .record(num_attempts);
             return Some(socket_pair);
         }
     }
+    counter!("rsipstack_server.ports.allocation_failures").increment(1);
     None
 }
 
