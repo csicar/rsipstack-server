@@ -88,22 +88,12 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             }
         };
 
-        let media_session = match MediaSession::new(
+        let media_session = MediaSession::new(
             connected_socket_pair,
             self.state.media_ip(),
             &offer,
             self.dialog.cancel_token().child_token(),
-        )
-        .await
-        {
-            Ok(session) => session,
-            Err(e) => {
-                error!(dialog_id = %dialog_id, error = ?e, "Failed to create media session");
-                self.dialog
-                    .reject(Some(rsip::StatusCode::ServerInternalError), None)?;
-                return Ok(());
-            }
-        };
+        );
 
         // Generate SDP answer
         let sdp_answer = media_session.generate_sdp_answer();

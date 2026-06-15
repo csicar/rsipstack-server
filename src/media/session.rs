@@ -29,17 +29,17 @@ pub struct MediaSession {
 }
 
 impl MediaSession {
-    pub async fn new(
+    pub fn new(
         rtp_socket_pair: ConnectedSocketPair,
         advertise_ip_addr: AdvertiseIpAddr,
         offer: &SdpOffer,
         cancel_token: CancellationToken,
-    ) -> anyhow::Result<Self> {
+    ) -> Self {
         // Bind RTP socket to local interface
 
         let session_id = rand::random::<u64>();
 
-        Ok(Self {
+        Self {
             advertise_ip_addr,
             rtp_socket_pair,
             payload_type: offer.payload_type,
@@ -47,7 +47,7 @@ impl MediaSession {
             offered_codecs: offer.codecs.clone(),
             session_id,
             cancel_token,
-        })
+        }
     }
 
     /// Generate SDP answer for this session
