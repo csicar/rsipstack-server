@@ -5,7 +5,10 @@ use crate::media::rtp::try_allocate_socket_pair;
 use crate::media::sdp::parse_sdp_offer;
 use crate::media::session::MediaSession;
 use crate::media::PeerSocketAddr;
+use crate::metrics::ScopedGauge;
 use crate::server::ServerState;
+use metrics::counter;
+use metrics::gauge;
 use rsipstack::dialog::server_dialog::ServerInviteDialog;
 use rsipstack::sip as rsip;
 use rsipstack::Result;
@@ -52,6 +55,12 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
                 warn!(dialog_id = %dialog_id, error = ?e, "Failed to parse SDP offer");
                 self.dialog
                     .reject(Some(rsip::StatusCode::NotAcceptableHere), None)?;
+                counter!(
+                    description: "Number of rejected incoming SIP calls",
+                    "rsipstack_server.calls.rejected_total",
+                    "reason" => "sdp_offer_invalid"
+                )
+                .increment(1);
                 return Ok(());
             }
         };
@@ -61,6 +70,12 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             try_allocate_socket_pair(&self.state.rtp_port_range, self.state.local_ip_addr).await
         else {
             warn!(dialog_id = %dialog_id, "Failed to find and bind free RTP/RTCP port pair.");
+            counter!(
+                description: "Number of rejected incoming SIP calls",
+                "rsipstack_server.calls.rejected_total",
+                "reason" => "rtp_port_pool_exhausted"
+            )
+            .increment(1);
             self.dialog.reject(
                 Some(rsip::StatusCode::ServiceUnavailable),
                 Some("No free RTP/RTCP port pair available".to_string()),
@@ -75,6 +90,12 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             Ok(pair) => pair,
             Err(e) => {
                 warn!(dialog_id = %dialog_id, error = %e, "Unable to connect to to peer {peer_socket_addr:?}");
+                counter!(
+                    description: "Number of rejected incoming SIP calls",
+                    "rsipstack_server.calls.rejected_total",
+                    "reason" => "udp_connect_failed"
+                )
+                .increment(1);
                 self.dialog.reject(
                     Some(rsip::StatusCode::ServerInternalError),
                     Some("Unable to connect to RTP peer".to_string()),
@@ -83,22 +104,12 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             }
         };
 
-        let media_session = match MediaSession::new(
+        let media_session = MediaSession::new(
             connected_socket_pair,
             self.state.media_ip(),
             &offer,
             self.dialog.cancel_token().child_token(),
-        )
-        .await
-        {
-            Ok(session) => session,
-            Err(e) => {
-                error!(dialog_id = %dialog_id, error = ?e, "Failed to create media session");
-                self.dialog
-                    .reject(Some(rsip::StatusCode::ServerInternalError), None)?;
-                return Ok(());
-            }
-        };
+        );
 
         // Generate SDP answer
         let sdp_answer = media_session.generate_sdp_answer();
@@ -120,6 +131,16 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
         }
 
         info!(dialog_id = %dialog_id, "Call accepted, starting audio handler");
+        let _active_calls_guard = ScopedGauge::new(gauge!(
+            unit: metrics::Unit::Count,
+            description: "Number of currently active SIP calls",
+            "rsipstack_server.calls.active"
+        ));
+        counter!(
+            description: "Number of successfully accepted SIP calls",
+            "rsipstack_server.calls.accepted_total"
+        )
+        .increment(1);
 
         // Start the media session and audio handler
         let (audio_in, audio_out) = media_session.start().await;
@@ -147,6 +168,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
         // Send BYE to ensure the SIP call is properly closed.
         // This is safe to call even if the remote already sent BYE -
         // bye() is a no-op if the dialog is already terminated.
+        info!(dialog_id = %dialog_id, "Sending BYE");
         if let Err(e) = self.dialog.bye().await {
             warn!(dialog_id = %dialog_id, error = ?e, "Failed to send BYE");
         }

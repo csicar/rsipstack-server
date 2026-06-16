@@ -29,17 +29,17 @@ pub struct MediaSession {
 }
 
 impl MediaSession {
-    pub async fn new(
+    pub fn new(
         rtp_socket_pair: ConnectedSocketPair,
         advertise_ip_addr: AdvertiseIpAddr,
         offer: &SdpOffer,
         cancel_token: CancellationToken,
-    ) -> anyhow::Result<Self> {
+    ) -> Self {
         // Bind RTP socket to local interface
 
         let session_id = rand::random::<u64>();
 
-        Ok(Self {
+        Self {
             advertise_ip_addr,
             rtp_socket_pair,
             payload_type: offer.payload_type,
@@ -47,7 +47,7 @@ impl MediaSession {
             offered_codecs: offer.codecs.clone(),
             session_id,
             cancel_token,
-        })
+        }
     }
 
     /// Generate SDP answer for this session
@@ -311,9 +311,7 @@ mod tests {
             local_ip, // In tests, bind and advertise are the same
             &offer,
             cancel_token,
-        )
-        .await
-        .unwrap();
+        );
 
         let sdp = session.generate_sdp_answer();
         assert!(sdp.contains(&format!("m=audio {}", test_port)));
@@ -364,9 +362,7 @@ mod tests {
             AdvertiseIpAddr(local_ip_addr.0), // In tests, bind and advertise are the same
             &offer,
             cancel_token,
-        )
-        .await
-        .unwrap();
+        );
 
         let sdp = session.generate_sdp_answer();
         // Should contain both offered codecs

@@ -50,6 +50,7 @@ mod audio;
 mod call_handler;
 pub mod codec;
 mod media;
+mod metrics;
 mod server;
 
 // Re-export public API
