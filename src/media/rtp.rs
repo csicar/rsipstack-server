@@ -139,7 +139,7 @@ impl RtpPortRange {
             last_rtp_port,
             current_rtp_port: AtomicU16::new(min_port),
         };
-        gauge!(unit: metrics::Unit::Count, description: "Upper bound of allocatable RTP/RTCP port pairs. OS may have some ports bound.", "rsipstack_server.ports.pair_capacity").set(range.capacity());
+        gauge!(unit: metrics::Unit::Count, description: "Upper bound of allocatable RTP/RTCP port pairs. OS may have some ports bound.", "rsipstack_server.ports.capacity").set(range.capacity());
 
         Ok(range)
     }
