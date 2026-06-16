@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicU16, Ordering::Relaxed},
 };
 
-use metrics::{counter, histogram};
+use metrics::{counter, gauge, histogram};
 use rsipstack::Error::Error;
 use rtp_rs::RtpReader;
 use tokio::net::UdpSocket;
@@ -133,11 +133,15 @@ impl RtpPortRange {
         } else {
             max_port - 1
         };
-        Ok(RtpPortRange {
+
+        let range = RtpPortRange {
             first_rtp_port: min_port,
             last_rtp_port,
             current_rtp_port: AtomicU16::new(min_port),
-        })
+        };
+        gauge!(unit: metrics::Unit::Count, description: "Upper bound of allocatable RTP/RTCP port pairs. OS may have some ports bound.", "rsipstack_server.ports.pair_capacity").set(range.capacity());
+
+        Ok(range)
     }
 
     pub fn next_port_pair(&self) -> RtpPortPair {
