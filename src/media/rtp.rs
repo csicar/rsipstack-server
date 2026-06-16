@@ -233,7 +233,7 @@ pub async fn try_allocate_socket_pair(
                 description: "Number of attempts before free port pair was found",
                 "rsipstack_server.ports.allocation_attempts"
             )
-            .record(num_attempts);
+            .record(num_attempts + 1);
             return Some(socket_pair);
         }
     }
