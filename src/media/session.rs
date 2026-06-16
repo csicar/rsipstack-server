@@ -287,11 +287,11 @@ impl MediaSession {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use crate::{
         media::{
-            rtp::{try_allocate_socket_pair, RtpPortRange},
+            rtp::{try_allocate_socket_pair, RtpPortRange, RtpSendState},
             sdp::{PeerIpAddr, PeerPort},
             PeerSocketAddr,
         },
@@ -304,6 +304,25 @@ mod tests {
         session: MediaSession,
         cancel_token: CancellationToken,
         rtp_port: u16,
+        peer_port: u16,
+    }
+
+    impl TestSetup {
+        /// Create a UDP socket bound to the peer port that can send RTP to the session
+        async fn create_peer_socket(&self) -> UdpSocket {
+            let peer_addr: SocketAddr = format!("127.0.0.1:{}", self.peer_port).parse().unwrap();
+            let socket = UdpSocket::bind(peer_addr).await.unwrap();
+            let session_addr: SocketAddr = format!("127.0.0.1:{}", self.rtp_port).parse().unwrap();
+            socket.connect(session_addr).await.unwrap();
+            socket
+        }
+    }
+
+    /// Send a single RTP packet (standalone function to use after session.start() consumes TestSetup)
+    async fn send_rtp_packet(socket: &UdpSocket, state: &RtpSendState) {
+        let payload = vec![0u8; 160]; // 20ms of PCMU silence
+        let packet = build_rtp_packet(&payload, state);
+        socket.send(&packet).await.unwrap();
     }
 
     async fn setup_test_session(offer: &SdpOffer, timeout: Option<Duration>) -> TestSetup {
@@ -334,15 +353,17 @@ mod tests {
             session,
             cancel_token,
             rtp_port: test_port,
+            peer_port: offer.peer_port.0,
         }
     }
 
     fn pcmu_offer() -> SdpOffer {
+        // Use a random peer port to avoid collisions between parallel tests
+        let peer_port = 30000 + (rand::random::<u16>() % 10000);
         let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
-        let peer_port = PeerPort(5000);
         SdpOffer {
             peer_addr,
-            peer_port,
+            peer_port: PeerPort(peer_port),
             codecs: vec![CodecInfo {
                 payload_type: 0,
                 codec_name: "PCMU".to_string(),
@@ -420,6 +441,76 @@ mod tests {
         assert!(
             setup.cancel_token.is_cancelled(),
             "Cancel token should be cancelled after timeout with no RTP packets"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_timeout_never_cancels() {
+        let offer = pcmu_offer();
+        let setup = setup_test_session(&offer, None).await;
+
+        // Start the session with no timeout configured
+        let (_audio_rx, _audio_tx) = setup.session.start().await;
+
+        // Wait for a while without sending any RTP packets
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // The cancel token should NOT be cancelled since timeout is disabled
+        assert!(
+            !setup.cancel_token.is_cancelled(),
+            "Cancel token should not be cancelled when timeout is disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_timeout_after_rtp_stops() {
+        let offer = pcmu_offer();
+        let setup = setup_test_session(&offer, Some(Duration::from_millis(100))).await;
+
+        // Create peer socket to send RTP packets (must be done before session.start() consumes setup.session)
+        let peer_socket = setup.create_peer_socket().await;
+        let cancel_token = setup.cancel_token.clone();
+
+        // Start the session (consumes setup.session)
+        let (_audio_rx, _audio_tx) = setup.session.start().await;
+
+        let mut rtp_state = RtpSendState {
+            ssrc: 0x12345678,
+            sequence: 0,
+            timestamp: 0,
+            payload_type: 0,
+        };
+
+        // Send RTP packets for 150ms (longer than the timeout)
+        for _ in 0..7 {
+            send_rtp_packet(&peer_socket, &rtp_state).await;
+            rtp_state.sequence += 1;
+            rtp_state.timestamp += 160;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // At this point we've been sending packets, so should NOT be cancelled
+        assert!(
+            !cancel_token.is_cancelled(),
+            "Cancel token should not be cancelled while receiving RTP"
+        );
+
+        // Now stop sending packets and wait for timeout
+        tokio::time::sleep(Duration::from_millis(90)).await;
+
+        // Still should not be cancelled (within timeout window)
+        assert!(
+            !cancel_token.is_cancelled(),
+            "Cancel token should not be cancelled before timeout after RTP stops"
+        );
+
+        // Wait past the timeout
+        tokio::time::sleep(Duration::from_millis(111)).await;
+
+        // Now should be cancelled
+        assert!(
+            cancel_token.is_cancelled(),
+            "Cancel token should be cancelled after timeout when RTP stops"
         );
     }
 }
