@@ -1,5 +1,7 @@
 //! Media Session - RTP socket management and audio channel interface
 
+use std::time::Duration;
+
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
 use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer};
 use crate::codec::{create_codec, Codec};
@@ -7,6 +9,7 @@ use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 
@@ -22,6 +25,8 @@ pub struct MediaSession {
     codec_name: String,
     /// All codecs offered by the peer
     offered_codecs: Vec<CodecInfo>,
+    /// Max [Duration] to wait for a rtp packet before closing the call
+    media_receive_timeout: Option<Duration>,
     /// Session ID for SDP
     session_id: u64,
     /// Cancellation token
@@ -34,6 +39,7 @@ impl MediaSession {
         advertise_ip_addr: AdvertiseIpAddr,
         offer: &SdpOffer,
         cancel_token: CancellationToken,
+        media_receive_timeout: Option<Duration>,
     ) -> Self {
         // Bind RTP socket to local interface
 
@@ -45,6 +51,7 @@ impl MediaSession {
             payload_type: offer.payload_type,
             codec_name: offer.codec_name.clone(),
             offered_codecs: offer.codecs.clone(),
+            media_receive_timeout,
             session_id,
             cancel_token,
         }
@@ -102,6 +109,7 @@ impl MediaSession {
                 audio_in_tx,
                 recv_cancel,
                 recv_codec,
+                self.media_receive_timeout,
                 recv_payload_type,
             )
             .await;
@@ -131,16 +139,30 @@ impl MediaSession {
         audio_tx: mpsc::UnboundedSender<AudioFrame>,
         cancel_token: CancellationToken,
         mut codec: Option<Box<dyn Codec>>,
+        audio_receive_timeout: Option<Duration>,
         default_payload_type: u8,
     ) {
         let mut buf = vec![0u8; 2048];
         let mut packet_count = 0u64;
+
+        let mut last_package_receive_time = Instant::now();
+
+        let mut interval =
+            tokio::time::interval(audio_receive_timeout.unwrap_or(Duration::from_hours(1000)));
 
         loop {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     debug!("RTP receive task cancelled after {} packets", packet_count);
                     break;
+                }
+                _ = interval.tick()  => {
+                    if let Some(max_delay) = audio_receive_timeout {
+                        if last_package_receive_time.elapsed() > max_delay {
+                            warn!("Did not receive any valid rtp packet for {:?}, cancelling the call", max_delay);
+                            cancel_token.cancel();
+                        }
+                    }
                 }
                 result = socket.recv(&mut buf) => {
                     match result {
@@ -154,6 +176,7 @@ impl MediaSession {
                             if let Some(raw) = parse_rtp_packet(&buf[..len]) {
                                 packet_count += 1;
                                 if packet_count % 500 == 1 {
+
                                     debug!(
                                         count = packet_count,
                                         seq = raw.sequence,
@@ -162,6 +185,8 @@ impl MediaSession {
                                         "RTP receive progress"
                                     );
                                 }
+
+                                last_package_receive_time = Instant::now();
 
                                 // Decode the payload using codec
                                 let samples = if let Some(ref mut c) = codec {
@@ -311,6 +336,7 @@ mod tests {
             local_ip, // In tests, bind and advertise are the same
             &offer,
             cancel_token,
+            None,
         );
 
         let sdp = session.generate_sdp_answer();
@@ -362,6 +388,7 @@ mod tests {
             AdvertiseIpAddr(local_ip_addr.0), // In tests, bind and advertise are the same
             &offer,
             cancel_token,
+            None,
         );
 
         let sdp = session.generate_sdp_answer();

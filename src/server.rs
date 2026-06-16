@@ -15,6 +15,7 @@ use rsipstack::transport::TransportLayer;
 use rsipstack::{EndpointBuilder, Error, Result};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -32,6 +33,11 @@ pub struct ServerConfig {
     pub min_port: u16,
     /// Maximum port to use for RTP media (uneven number). This is the RTCP port.
     pub max_port: u16,
+    /// [Duration] after which the call may be stopped (using the canceltoken) when no more
+    /// rtp packets are received from the remote.
+    /// Note: The implementation may take up to `2*media_receive_timeout` until the call is actually stopped.
+    /// When set to `None`, this feature is deactivated.
+    pub media_receive_timeout: Option<Duration>,
 }
 
 impl Default for ServerConfig {
@@ -42,6 +48,7 @@ impl Default for ServerConfig {
             external_ip: None,
             min_port: 10000,
             max_port: 10099,
+            media_receive_timeout: Some(Duration::from_secs(30)),
         }
     }
 }
@@ -58,6 +65,7 @@ pub struct ServerState {
     pub external_ip: Option<AdvertiseIpAddr>,
     pub rtp_port_range: RtpPortRange,
     pub cancel_token: CancellationToken,
+    pub media_receive_timeout: Option<Duration>,
 }
 
 impl ServerState {
@@ -172,6 +180,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
             external_ip: config.external_ip,
             rtp_port_range: RtpPortRange::new(config.min_port, config.max_port)?,
             cancel_token: cancel_token.clone(),
+            media_receive_timeout: config.media_receive_timeout,
         });
 
         Ok(Self {

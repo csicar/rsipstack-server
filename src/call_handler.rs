@@ -109,6 +109,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             self.state.media_ip(),
             &offer,
             self.dialog.cancel_token().child_token(),
+            self.state.media_receive_timeout,
         );
 
         // Generate SDP answer

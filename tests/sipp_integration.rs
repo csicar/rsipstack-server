@@ -133,6 +133,7 @@ async fn test_echo_server_with_sipp() {
         external_ip: None,
         min_port,
         max_port,
+        ..Default::default()
     };
 
     let server = SipServer::new(config, || EchoHandler).await.unwrap();
@@ -223,6 +224,7 @@ async fn test_multiple_concurrent_calls() {
         external_ip: None,
         min_port,
         max_port,
+        ..Default::default()
     };
 
     let server = SipServer::new(config, || EchoHandler).await.unwrap();
@@ -300,6 +302,7 @@ async fn test_server_handles_rapid_calls() {
         external_ip: None,
         min_port,
         max_port,
+        ..Default::default()
     };
 
     let server = SipServer::new(config, || EchoHandler).await.unwrap();
