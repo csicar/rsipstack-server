@@ -212,5 +212,6 @@ To collect them, register a backend such as [`metrics-exporter-prometheus`](http
 | `rsipstack_server.calls.active` | gauge | — | Currently active calls |
 | `rsipstack_server.calls.terminated_total` | counter | `reason`: see [`TerminatedReason`](https://docs.rs/rsipstack/latest/rsipstack/dialog/dialog/enum.TerminatedReason.html) | Calls terminated after being accepted |
 | `rsipstack_server.calls.dialog_not_found_total` | counter | — | Requests received for unknown dialogs |
+| `rsipstack_server.ports.capacity` | gauge | — | Upper bound of allocatable RTP/RTCP port pairs. OS may have some ports already bound. |
 | `rsipstack_server.ports.allocation_attempts` | histogram | — | Number of attempts before a free port pair was found |
 | `rsipstack_server.ports.allocation_failures` | counter | — | Port allocation failures (pool exhausted) |
