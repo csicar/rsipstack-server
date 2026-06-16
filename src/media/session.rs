@@ -300,26 +300,18 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_media_session_sdp_pcmu_only() {
-        let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
-        let peer_port = PeerPort(5000);
-        let peer_socket_addr = PeerSocketAddr::new(peer_addr, peer_port);
+    struct TestSetup {
+        session: MediaSession,
+        cancel_token: CancellationToken,
+        rtp_port: u16,
+    }
 
-        let offer = SdpOffer {
-            peer_addr,
-            peer_port,
-            codecs: vec![CodecInfo {
-                payload_type: 0,
-                codec_name: "PCMU".to_string(),
-            }],
-            payload_type: 0,
-            codec_name: "PCMU".to_string(),
-        };
+    async fn setup_test_session(offer: &SdpOffer, timeout: Option<Duration>) -> TestSetup {
+        let peer_socket_addr = PeerSocketAddr::new(offer.peer_addr, offer.peer_port);
 
-        // Use a random high port to avoid collisions
         let test_port = 40000 + (rand::random::<u16>() % 10000);
         let test_port = test_port & !1; // Ensure even port
+
         let rtp_port_range = RtpPortRange::new(test_port, test_port + 1).unwrap();
         let local_ip_addr = LocalIpAddr(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
         let port_pair = try_allocate_socket_pair(&rtp_port_range, local_ip_addr)
@@ -330,17 +322,43 @@ mod tests {
             .unwrap();
 
         let cancel_token = CancellationToken::new();
-        let local_ip = AdvertiseIpAddr(local_ip_addr.0);
         let session = MediaSession::new(
             port_pair,
-            local_ip, // In tests, bind and advertise are the same
-            &offer,
-            cancel_token,
-            None,
+            AdvertiseIpAddr(local_ip_addr.0),
+            offer,
+            cancel_token.clone(),
+            timeout,
         );
 
-        let sdp = session.generate_sdp_answer();
-        assert!(sdp.contains(&format!("m=audio {}", test_port)));
+        TestSetup {
+            session,
+            cancel_token,
+            rtp_port: test_port,
+        }
+    }
+
+    fn pcmu_offer() -> SdpOffer {
+        let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
+        let peer_port = PeerPort(5000);
+        SdpOffer {
+            peer_addr,
+            peer_port,
+            codecs: vec![CodecInfo {
+                payload_type: 0,
+                codec_name: "PCMU".to_string(),
+            }],
+            payload_type: 0,
+            codec_name: "PCMU".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_media_session_sdp_pcmu_only() {
+        let offer = pcmu_offer();
+        let setup = setup_test_session(&offer, None).await;
+
+        let sdp = setup.session.generate_sdp_answer();
+        assert!(sdp.contains(&format!("m=audio {}", setup.rtp_port)));
         assert!(sdp.contains("a=rtpmap:0 PCMU/8000"));
         // Should NOT contain opus since it wasn't offered
         assert!(!sdp.contains("opus"));
@@ -350,11 +368,9 @@ mod tests {
     async fn test_media_session_sdp_multiple_codecs() {
         let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
         let peer_port = PeerPort(5000);
-        let peer_socket_addr = PeerSocketAddr::new(peer_addr, peer_port);
-
         let offer = SdpOffer {
-            peer_addr: peer_addr,
-            peer_port: peer_port,
+            peer_addr,
+            peer_port,
             codecs: vec![
                 CodecInfo {
                     payload_type: 111,
@@ -369,34 +385,41 @@ mod tests {
             codec_name: "opus".to_string(),
         };
 
-        let test_port = 40000 + (rand::random::<u16>() % 10000);
-        let test_port = test_port & !1;
+        let setup = setup_test_session(&offer, None).await;
 
-        let cancel_token = CancellationToken::new();
-
-        let rtp_port_range = RtpPortRange::new(test_port, test_port + 1).unwrap();
-        let local_ip_addr = LocalIpAddr(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-        let port_pair = try_allocate_socket_pair(&rtp_port_range, local_ip_addr)
-            .await
-            .unwrap()
-            .connect(&peer_socket_addr)
-            .await
-            .unwrap();
-
-        let session = MediaSession::new(
-            port_pair,
-            AdvertiseIpAddr(local_ip_addr.0), // In tests, bind and advertise are the same
-            &offer,
-            cancel_token,
-            None,
-        );
-
-        let sdp = session.generate_sdp_answer();
+        let sdp = setup.session.generate_sdp_answer();
         // Should contain both offered codecs
         assert!(sdp.contains("opus/48000"));
         assert!(sdp.contains("PCMU/8000"));
         // Payload types should match what was offered
         assert!(sdp.contains("a=rtpmap:111 opus"));
         assert!(sdp.contains("a=rtpmap:0 PCMU"));
+    }
+
+    #[tokio::test]
+    async fn test_media_receive_timeout_cancels_call() {
+        let offer = pcmu_offer();
+        let setup = setup_test_session(&offer, Some(Duration::from_millis(100))).await;
+
+        // Start the session - this spawns the RTP receive task
+        let (_audio_rx, _audio_tx) = setup.session.start().await;
+
+        // Wait 90ms - still within the timeout window
+        tokio::time::sleep(Duration::from_millis(90)).await;
+
+        // The cancel token should NOT be cancelled yet
+        assert!(
+            !setup.cancel_token.is_cancelled(),
+            "Cancel token should not be cancelled before timeout"
+        );
+
+        // Wait for more than the timeout duration (timeout + interval tick margin)
+        tokio::time::sleep(Duration::from_millis(111)).await;
+
+        // Now the cancel token should be cancelled due to no RTP packets received
+        assert!(
+            setup.cancel_token.is_cancelled(),
+            "Cancel token should be cancelled after timeout with no RTP packets"
+        );
     }
 }
