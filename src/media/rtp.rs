@@ -168,7 +168,6 @@ impl RtpPortRange {
     }
 
     pub fn capacity(&self) -> u16 {
-        // TODO: add metric for capacity?
         (self.last_rtp_port - self.first_rtp_port) / 2 + 1
     }
 }
@@ -241,7 +240,11 @@ pub async fn try_allocate_socket_pair(
             return Some(socket_pair);
         }
     }
-    counter!("rsipstack_server.ports.allocation_failures").increment(1);
+    counter!(
+        description: "Number of times the RTP port pool was exhausted and no socket pair could be bound",
+        "rsipstack_server.ports.allocation_failures"
+    )
+    .increment(1);
     None
 }
 
