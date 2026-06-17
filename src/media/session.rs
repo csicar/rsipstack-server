@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use super::deadline::Deadline;
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
 use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer};
 use crate::codec::{create_codec, Codec};
@@ -9,7 +10,6 @@ use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 
@@ -144,11 +144,7 @@ impl MediaSession {
     ) {
         let mut buf = vec![0u8; 2048];
         let mut packet_count = 0u64;
-
-        // Create a single sleep future that we reset on each packet
-        let media_receive_deadline = tokio::time::sleep(media_receive_timeout);
-        // CLAUDE: why is pin necessary here?
-        tokio::pin!(media_receive_deadline);
+        let mut deadline = Deadline::new(media_receive_timeout);
 
         loop {
             tokio::select! {
@@ -156,10 +152,9 @@ impl MediaSession {
                     debug!("RTP receive task cancelled after {} packets", packet_count);
                     break;
                 }
-                _ = &mut media_receive_deadline => {
+                _ = &mut deadline => {
                     warn!("Did not receive any RTP packet for {:?}, cancelling the call", media_receive_timeout);
                     cancel_token.cancel();
-                    // CLAUDE: why is this break necessary?
                     break;
                 }
                 result = socket.recv(&mut buf) => {
@@ -171,7 +166,7 @@ impl MediaSession {
                                 "Received RTP packet"
                             );
 
-                            media_receive_deadline.as_mut().reset(Instant::now() + media_receive_timeout);
+                            deadline.reset();
 
                             if let Some(raw) = parse_rtp_packet(&buf[..len]) {
                                 packet_count += 1;
