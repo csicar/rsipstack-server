@@ -135,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         external_ip: args.external_ip,
         min_port: args.min_port,
         max_port: args.max_port,
+        ..Default::default()
     };
 
     let server = SipServer::new(server_config, EchoHandler::new).await?;
