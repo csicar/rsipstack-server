@@ -163,8 +163,7 @@ impl MediaSession {
                                 "Received RTP packet"
                             );
 
-                            deadline.reset();
-
+                            
                             if let Some(raw) = parse_rtp_packet(&buf[..len]) {
                                 // TODO: check that raw.pt (payload type) matched selected pt from sdp
                                 packet_count += 1;
@@ -177,6 +176,8 @@ impl MediaSession {
                                         "RTP receive progress"
                                     );
                                 }
+
+                                deadline.reset();
 
                                 // Decode the payload using codec
                                 let samples = if let Some(ref mut c) = codec {

@@ -34,7 +34,8 @@ pub struct ServerConfig {
     /// Maximum port to use for RTP media (uneven number). This is the RTCP port.
     pub max_port: u16,
     /// [Duration] after which the call will be stopped (using the cancel token) when no
-    /// RTP packets are received from the remote.
+    /// valid RTP packets are received from the remote.
+    /// Note: This timeout also applies to the initial connection establishment.
     pub media_receive_timeout: Duration,
 }
 
