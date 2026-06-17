@@ -33,11 +33,9 @@ pub struct ServerConfig {
     pub min_port: u16,
     /// Maximum port to use for RTP media (uneven number). This is the RTCP port.
     pub max_port: u16,
-    /// [Duration] after which the call may be stopped (using the canceltoken) when no more
-    /// rtp packets are received from the remote.
-    /// Note: The implementation may take up to `2*media_receive_timeout` until the call is actually stopped.
-    /// When set to `None`, this feature is deactivated.
-    pub media_receive_timeout: Option<Duration>,
+    /// [Duration] after which the call will be stopped (using the cancel token) when no
+    /// RTP packets are received from the remote.
+    pub media_receive_timeout: Duration,
 }
 
 impl Default for ServerConfig {
@@ -48,7 +46,7 @@ impl Default for ServerConfig {
             external_ip: None,
             min_port: 10000,
             max_port: 10099,
-            media_receive_timeout: Some(Duration::from_secs(30)),
+            media_receive_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -65,7 +63,7 @@ pub struct ServerState {
     pub external_ip: Option<AdvertiseIpAddr>,
     pub rtp_port_range: RtpPortRange,
     pub cancel_token: CancellationToken,
-    pub media_receive_timeout: Option<Duration>,
+    pub media_receive_timeout: Duration,
 }
 
 impl ServerState {

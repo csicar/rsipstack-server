@@ -25,8 +25,8 @@ pub struct MediaSession {
     codec_name: String,
     /// All codecs offered by the peer
     offered_codecs: Vec<CodecInfo>,
-    /// Max [Duration] to wait for a rtp packet before closing the call
-    media_receive_timeout: Option<Duration>,
+    /// Duration to wait for an RTP packet before closing the call
+    media_receive_timeout: Duration,
     /// Session ID for SDP
     session_id: u64,
     /// Cancellation token
@@ -39,7 +39,7 @@ impl MediaSession {
         advertise_ip_addr: AdvertiseIpAddr,
         offer: &SdpOffer,
         cancel_token: CancellationToken,
-        media_receive_timeout: Option<Duration>,
+        media_receive_timeout: Duration,
     ) -> Self {
         // Bind RTP socket to local interface
 
@@ -139,16 +139,16 @@ impl MediaSession {
         audio_tx: mpsc::UnboundedSender<AudioFrame>,
         cancel_token: CancellationToken,
         mut codec: Option<Box<dyn Codec>>,
-        audio_receive_timeout: Option<Duration>,
+        media_receive_timeout: Duration,
         default_payload_type: u8,
     ) {
         let mut buf = vec![0u8; 2048];
         let mut packet_count = 0u64;
 
-        let mut last_package_receive_time = Instant::now();
-
-        let mut interval =
-            tokio::time::interval(audio_receive_timeout.unwrap_or(Duration::from_hours(1000)));
+        // Create a single sleep future that we reset on each packet
+        let media_receive_deadline = tokio::time::sleep(media_receive_timeout);
+        // CLAUDE: why is pin necessary here?
+        tokio::pin!(media_receive_deadline);
 
         loop {
             tokio::select! {
@@ -156,13 +156,11 @@ impl MediaSession {
                     debug!("RTP receive task cancelled after {} packets", packet_count);
                     break;
                 }
-                _ = interval.tick()  => {
-                    if let Some(max_delay) = audio_receive_timeout {
-                        if last_package_receive_time.elapsed() > max_delay {
-                            warn!("Did not receive any valid rtp packet for {:?}, cancelling the call", max_delay);
-                            cancel_token.cancel();
-                        }
-                    }
+                _ = &mut media_receive_deadline => {
+                    warn!("Did not receive any RTP packet for {:?}, cancelling the call", media_receive_timeout);
+                    cancel_token.cancel();
+                    // CLAUDE: why is this break necessary?
+                    break;
                 }
                 result = socket.recv(&mut buf) => {
                     match result {
@@ -173,10 +171,11 @@ impl MediaSession {
                                 "Received RTP packet"
                             );
 
+                            media_receive_deadline.as_mut().reset(Instant::now() + media_receive_timeout);
+
                             if let Some(raw) = parse_rtp_packet(&buf[..len]) {
                                 packet_count += 1;
                                 if packet_count % 500 == 1 {
-
                                     debug!(
                                         count = packet_count,
                                         seq = raw.sequence,
@@ -185,8 +184,6 @@ impl MediaSession {
                                         "RTP receive progress"
                                     );
                                 }
-
-                                last_package_receive_time = Instant::now();
 
                                 // Decode the payload using codec
                                 let samples = if let Some(ref mut c) = codec {
@@ -325,7 +322,7 @@ mod tests {
         socket.send(&packet).await.unwrap();
     }
 
-    async fn setup_test_session(offer: &SdpOffer, timeout: Option<Duration>) -> TestSetup {
+    async fn setup_test_session(offer: &SdpOffer, timeout: Duration) -> TestSetup {
         let peer_socket_addr = PeerSocketAddr::new(offer.peer_addr, offer.peer_port);
 
         let test_port = 40000 + (rand::random::<u16>() % 10000);
@@ -376,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn test_media_session_sdp_pcmu_only() {
         let offer = pcmu_offer();
-        let setup = setup_test_session(&offer, None).await;
+        let setup = setup_test_session(&offer, Duration::MAX).await;
 
         let sdp = setup.session.generate_sdp_answer();
         assert!(sdp.contains(&format!("m=audio {}", setup.rtp_port)));
@@ -406,7 +403,7 @@ mod tests {
             codec_name: "opus".to_string(),
         };
 
-        let setup = setup_test_session(&offer, None).await;
+        let setup = setup_test_session(&offer, Duration::MAX).await;
 
         let sdp = setup.session.generate_sdp_answer();
         // Should contain both offered codecs
@@ -420,13 +417,13 @@ mod tests {
     #[tokio::test]
     async fn test_media_receive_timeout_cancels_call() {
         let offer = pcmu_offer();
-        let setup = setup_test_session(&offer, Some(Duration::from_millis(100))).await;
+        let setup = setup_test_session(&offer, Duration::from_millis(50)).await;
 
         // Start the session - this spawns the RTP receive task
         let (_audio_rx, _audio_tx) = setup.session.start().await;
 
-        // Wait 90ms - still within the timeout window
-        tokio::time::sleep(Duration::from_millis(90)).await;
+        // Wait less than the timeout
+        tokio::time::sleep(Duration::from_millis(25)).await;
 
         // The cancel token should NOT be cancelled yet
         assert!(
@@ -434,8 +431,8 @@ mod tests {
             "Cancel token should not be cancelled before timeout"
         );
 
-        // Wait for more than the timeout duration (timeout + interval tick margin)
-        tokio::time::sleep(Duration::from_millis(111)).await;
+        // Wait past the timeout (50ms timeout + margin)
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Now the cancel token should be cancelled due to no RTP packets received
         assert!(
@@ -445,33 +442,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_no_timeout_never_cancels() {
+    async fn test_large_timeout_does_not_cancel() {
         let offer = pcmu_offer();
-        let setup = setup_test_session(&offer, None).await;
+        let setup = setup_test_session(&offer, Duration::from_secs(3600)).await;
 
-        // Start the session with no timeout configured
+        // Start the session with a very large timeout
         let (_audio_rx, _audio_tx) = setup.session.start().await;
 
-        // Wait for a while without sending any RTP packets
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Wait a bit without sending any RTP packets
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // The cancel token should NOT be cancelled since timeout is disabled
+        // The cancel token should NOT be cancelled since timeout is very large
         assert!(
             !setup.cancel_token.is_cancelled(),
-            "Cancel token should not be cancelled when timeout is disabled"
+            "Cancel token should not be cancelled with large timeout"
         );
     }
 
     #[tokio::test]
-    async fn test_timeout_after_rtp_stops() {
+    async fn test_timeout_resets_on_rtp_packet() {
         let offer = pcmu_offer();
-        let setup = setup_test_session(&offer, Some(Duration::from_millis(100))).await;
+        let setup = setup_test_session(&offer, Duration::from_millis(100)).await;
 
-        // Create peer socket to send RTP packets (must be done before session.start() consumes setup.session)
+        // Create peer socket to send RTP packets
         let peer_socket = setup.create_peer_socket().await;
         let cancel_token = setup.cancel_token.clone();
 
-        // Start the session (consumes setup.session)
+        // Start the session
         let (_audio_rx, _audio_tx) = setup.session.start().await;
 
         let mut rtp_state = RtpSendState {
@@ -481,22 +478,23 @@ mod tests {
             payload_type: 0,
         };
 
-        // Send RTP packets for 150ms (longer than the timeout)
-        for _ in 0..7 {
+        // Send packets every 50ms for 250ms total (longer than the 100ms timeout)
+        // This tests that the timeout resets on each packet
+        for _ in 0..5 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
             send_rtp_packet(&peer_socket, &rtp_state).await;
             rtp_state.sequence += 1;
             rtp_state.timestamp += 160;
-            tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        // At this point we've been sending packets, so should NOT be cancelled
+        // Should NOT be cancelled because packets kept resetting the timeout
         assert!(
             !cancel_token.is_cancelled(),
             "Cancel token should not be cancelled while receiving RTP"
         );
 
         // Now stop sending packets and wait for timeout
-        tokio::time::sleep(Duration::from_millis(90)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Still should not be cancelled (within timeout window)
         assert!(
@@ -504,8 +502,8 @@ mod tests {
             "Cancel token should not be cancelled before timeout after RTP stops"
         );
 
-        // Wait past the timeout
-        tokio::time::sleep(Duration::from_millis(111)).await;
+        // Now stop sending packets and wait past the timeout
+        tokio::time::sleep(Duration::from_millis(80)).await;
 
         // Now should be cancelled
         assert!(
