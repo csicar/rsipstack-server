@@ -148,6 +148,7 @@ impl MediaSession {
 
         loop {
             tokio::select! {
+                biased;
                 _ = cancel_token.cancelled() => {
                     debug!("RTP receive task cancelled after {} packets", packet_count);
                     break;
@@ -155,7 +156,6 @@ impl MediaSession {
                 _ = &mut deadline => {
                     warn!("Did not receive any RTP packet for {:?}, cancelling the call", media_receive_timeout);
                     cancel_token.cancel();
-                    break;
                 }
                 result = socket.recv(&mut buf) => {
                     match result {
