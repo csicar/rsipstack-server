@@ -503,4 +503,33 @@ mod tests {
             "Cancel token should be cancelled after timeout when RTP stops"
         );
     }
+
+    #[tokio::test]
+    async fn test_invalid_rtp_packets_do_not_reset_timeout() {
+        let offer = pcmu_offer();
+        let setup = setup_test_session(&offer, Duration::from_millis(100)).await;
+
+        // Create peer socket to send packets
+        let peer_socket = setup.create_peer_socket().await;
+        let cancel_token = setup.cancel_token.clone();
+
+        // Start the session
+        let (_audio_rx, _audio_tx) = setup.session.start().await;
+
+        // Send invalid packets every 30ms - these should NOT reset the timeout
+        // With 100ms timeout: rounds 1-3 (30/60/90ms) not cancelled, rounds 4-5 (120/150ms) cancelled
+        for i in 0..4 {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            // Send garbage data that won't parse as valid RTP (too short)
+            let invalid_packet = vec![0u8; 4];
+            peer_socket.send(&invalid_packet).await.unwrap();
+
+            assert_eq!(
+                cancel_token.is_cancelled(),
+                i >= 3,
+                "Cancel token is wrong at round {}",
+                i + 1
+            );
+        }
+    }
 }
