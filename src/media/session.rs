@@ -102,7 +102,6 @@ impl MediaSession {
         // Spawn RTP receive task
         let recv_socket = rtp_socket.clone();
         let recv_cancel = cancel_token.clone();
-        let recv_payload_type = self.payload_type;
         tokio::spawn(async move {
             Self::rtp_receive_task(
                 recv_socket,
@@ -110,7 +109,6 @@ impl MediaSession {
                 recv_cancel,
                 recv_codec,
                 self.media_receive_timeout,
-                recv_payload_type,
             )
             .await;
         });
@@ -140,7 +138,6 @@ impl MediaSession {
         cancel_token: CancellationToken,
         mut codec: Option<Box<dyn Codec>>,
         media_receive_timeout: Duration,
-        default_payload_type: u8,
     ) {
         let mut buf = vec![0u8; 2048];
         let mut packet_count = 0u64;
@@ -206,8 +203,6 @@ impl MediaSession {
                 }
             }
         }
-
-        let _ = default_payload_type; // Keep parameter for future use
     }
 
     /// RTP send task - receives AudioFrames from the channel, encodes them, and sends RTP packets
