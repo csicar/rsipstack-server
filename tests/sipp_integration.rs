@@ -341,7 +341,7 @@ async fn test_drain_on_sigterm() {
     assert!(!server_handle.is_finished(), "Server should still be running before SIGTERM");
 
     // Trigger drain 
-    //drain_token.start_drain();
+    drain_token.start_drain();
 
     // todo: the command below would trigger a sigterm but also kills other tests
     // Command::new("kill")
