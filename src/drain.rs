@@ -8,7 +8,7 @@ impl DrainToken {
         DrainToken(CancellationToken::new())
     }
 
-    /// Activates drain mode. After this, `is_draining()` returns `true` and `draining()` resolves immediately.
+    /// Activates drain mode. After this, `is_draining()` returns `true`
     pub fn start_drain(&self) {
         self.0.cancel();
     }
