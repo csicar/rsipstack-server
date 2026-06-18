@@ -277,6 +277,90 @@ async fn test_multiple_concurrent_calls() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_drain_on_sigterm() {
+    let sipp_cmd = match get_sipp_command() {
+        Some(cmd) => cmd,
+        None => {
+            eprintln!("Skipping test: sipp not available (set SIPP_PATH env var)");
+            return;
+        }
+    };
+
+    let sip_port = allocate_udp_port();
+    let min_port = allocate_udp_port();
+    let max_port = min_port + 99;
+    let local_ip = get_local_ip();
+    let server_addr = format!("{}:{}", local_ip, sip_port);
+
+    let config = ServerConfig {
+        port: sip_port,
+        bind_addr: Some(local_ip.parse().unwrap()),
+        external_ip: None,
+        min_port,
+        max_port,
+        ..Default::default()
+    };
+
+    let server = SipServer::new(config, || EchoHandler).await.unwrap();
+    let drain_token = server.drain_token.clone(); 
+    let server_handle = tokio::spawn(async move { server.run().await });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let scenario_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("test")
+        .join("uac_pcap.xml");
+
+    // Start a long call in the background so there is an active dialog when SIGTERM arrives
+    let sipp_handle = {
+        let sipp_cmd = sipp_cmd.clone();
+        let server_addr = server_addr.clone();
+        tokio::task::spawn_blocking(move || {
+            run_sipp(
+                &sipp_cmd,
+                &[
+                    "-sf",
+                    scenario_path.to_str().unwrap(),
+                    &server_addr,
+                    "-m",
+                    "1",
+                    "-d",
+                    "5000", // 5 second call
+                    "-timeout",
+                    "30s",
+                    "-timeout_error",
+                ],
+            )
+        })
+    };
+
+    // Wait for the call to establish before draining
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    assert!(!server_handle.is_finished(), "Server should still be running before SIGTERM");
+
+    // Trigger drain 
+    //drain_token.start_drain();
+
+    // todo: the command below would trigger a sigterm but also kills other tests
+    // Command::new("kill")
+    //     .args(["-TERM", &std::process::id().to_string()])
+    //     .output()
+    //     .expect("Failed to send SIGTERM");
+
+    // Wait for the active call to finish naturally
+    let sipp_result = sipp_handle.await.unwrap();
+    assert!(sipp_result.status.success(), "sipp call failed during drain");
+
+    // Server should now shut itself down since all dialogs are gone
+    let shutdown = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
+    assert!(
+        shutdown.is_ok(),
+        "Server did not shut down after drain completed"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_server_handles_rapid_calls() {
     let sipp_cmd = match get_sipp_command() {

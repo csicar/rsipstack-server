@@ -2,6 +2,7 @@
 
 use crate::audio::handler::AudioHandler;
 use crate::call_handler::CallHandler;
+use crate::drain::DrainToken;
 use crate::media::rtp::RtpPortRange;
 use crate::media::sdp::AdvertiseIpAddr;
 use metrics::counter;
@@ -17,6 +18,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -107,6 +109,7 @@ pub struct SipServer<F: AudioHandlerFactory> {
     local_addr: SocketAddr,
     handler_factory: Arc<F>,
     external_addr: SocketAddr,
+    pub drain_token: DrainToken
 }
 
 const SIP_USER_AGENT: &str = concat!("rsipstack-server/", env!("CARGO_PKG_VERSION"));
@@ -144,6 +147,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
     /// ```
     pub async fn new(config: ServerConfig, handler_factory: F) -> Result<Self> {
         let cancel_token = CancellationToken::new();
+        let drain_token = DrainToken::new();
 
         // Get local IP address
         let local_ip = LocalIpAddr(match config.bind_addr {
@@ -183,7 +187,8 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         });
 
         Ok(Self {
-            cancel_token,
+            cancel_token, 
+            drain_token,
             transport_layer,
             state,
             local_addr,
@@ -214,6 +219,21 @@ impl<F: AudioHandlerFactory> SipServer<F> {
 
         let incoming = endpoint.incoming_transactions()?;
 
+        let mut sigterm = signal(SignalKind::terminate())?;
+
+        let drain_token_clone = self.drain_token.clone();
+        let cancel_token_clone = cancel_token.clone();
+        let dialog_layer_clone = dialog_layer.clone();
+        tokio::spawn(async move {
+            sigterm.recv().await;
+            info!("received SIGTERM, draining");
+            drain_token_clone.start_drain();
+
+            if dialog_layer_clone.len() == 0 {
+                cancel_token_clone.cancel();
+            }
+        });
+
         // Build contact URI
         let contact = rsip::Uri {
             scheme: Some(rsip::Scheme::Sip),
@@ -237,14 +257,16 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                 dialog_layer.clone(),
                 incoming,
                 state_sender,
-                contact
+                contact,
+                self.drain_token.clone()
             ) => {
                 match r {
                     Ok(_) => info!("Request processing finished"),
                     Err(e) => error!("Request processing error: {:?}", e),
                 }
             }
-            r = Self::process_dialog_states(state.clone(), dialog_layer.clone(), state_receiver, handler_factory) => {
+            
+            r = Self::process_dialog_states(state.clone(), dialog_layer.clone(), state_receiver, handler_factory, cancel_token.clone(), self.drain_token.clone()) => {
                 match r {
                     Ok(_) => info!("Dialog state processing finished"),
                     Err(e) => error!("Dialog state processing error: {:?}", e),
@@ -265,6 +287,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         mut incoming: TransactionReceiver,
         state_sender: DialogStateSender,
         contact: rsip::Uri,
+        drain_token: DrainToken,
     ) -> Result<()> {
         while let Some(mut tx) = incoming.recv().await {
             debug!(
@@ -325,8 +348,10 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                     });
                 }
                 rsip::Method::Options => {
-                    // Reply to OPTIONS with OK (basic keep-alive support)
-                    tx.reply(rsip::StatusCode::OK).await?;
+                    if !drain_token.is_draining() {
+                        // Reply to OPTIONS with OK (basic keep-alive support)
+                        tx.reply(rsip::StatusCode::OK).await?;
+                    }
                 }
                 rsip::Method::Register => {
                     // We don't support registration, reject it
@@ -348,6 +373,8 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         dialog_layer: Arc<DialogLayer>,
         mut state_receiver: DialogStateReceiver,
         handler_factory: Arc<F>,
+        cancel_token: CancellationToken,
+        drain_token: DrainToken,
     ) -> Result<()> {
         while let Some(state) = state_receiver.recv().await {
             match state {
@@ -386,6 +413,13 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                     info!(dialog_id = %id, reason = ?reason, "Call terminated");
                     counter!("rsipstack_server.calls.terminated_total", "reason" => format!("{:?}", reason)).increment(1);
                     dialog_layer.remove_dialog(&id);
+
+                    if drain_token.is_draining() {
+                        if dialog_layer.len() == 0 {
+                            info!("Last dialog terminated during drain. Starting shutdown.");
+                            cancel_token.cancel();
+                        }
+                    }
                 }
                 DialogState::Early(id, _) => {
                     debug!(dialog_id = %id, "Early dialog state");
@@ -398,6 +432,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
 
         Ok(())
     }
+
 }
 
 /// Get the first non-loopback network interface IP address
