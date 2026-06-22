@@ -15,6 +15,7 @@ use rsipstack_server::{
     SipHeaders, SipServer,
 };
 use std::net::IpAddr;
+use tokio::signal::unix::{signal, SignalKind};
 use tracing::{debug, info, trace};
 
 /// SIP Echo Server - Accepts calls and echoes audio back
@@ -139,6 +140,22 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let server = SipServer::new(server_config, EchoHandler::new).await?;
+    let cancel_token = server.cancel_token.clone();
+    let drain_token = server.drain_token.clone();
+
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("Ctrl-C received. Cancelling ...");
+        cancel_token.cancel();
+    });
+
+    let mut sigterm_stream = signal(SignalKind::terminate())?;
+    tokio::spawn(async move {
+        sigterm_stream.recv().await;
+        info!("Received SIGTERM. Draining ...");
+        drain_token.start_drain();
+    });
+
     server.run().await?;
 
     Ok(())
