@@ -5,7 +5,7 @@ use crate::call_handler::CallHandler;
 use crate::drain::DrainToken;
 use crate::media::rtp::RtpPortRange;
 use crate::media::sdp::AdvertiseIpAddr;
-use metrics::counter;
+use metrics::{counter, gauge};
 use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::sip as rsip;
@@ -103,13 +103,13 @@ where
 
 /// SIP Server
 pub struct SipServer<F: AudioHandlerFactory> {
-    cancel_token: CancellationToken,
+    pub cancel_token: CancellationToken,
+    pub drain_token: DrainToken,
     transport_layer: TransportLayer,
     state: Arc<ServerState>,
     local_addr: SocketAddr,
     handler_factory: Arc<F>,
     external_addr: SocketAddr,
-    pub drain_token: DrainToken,
 }
 
 const SIP_USER_AGENT: &str = concat!("rsipstack-server/", env!("CARGO_PKG_VERSION"));
@@ -224,10 +224,12 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         let drain_token_clone = self.drain_token.clone();
         let cancel_token_clone = cancel_token.clone();
         let dialog_layer_clone = dialog_layer.clone();
+        gauge!("rsipstack_server.drain_active").set(0);
         tokio::spawn(async move {
             sigterm.recv().await;
             info!("received SIGTERM, draining");
             drain_token_clone.start_drain();
+            gauge!("rsipstack_server.drain_active").set(1);
 
             if dialog_layer_clone.len() == 0 {
                 cancel_token_clone.cancel();
