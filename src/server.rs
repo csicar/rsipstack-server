@@ -109,7 +109,7 @@ pub struct SipServer<F: AudioHandlerFactory> {
     local_addr: SocketAddr,
     handler_factory: Arc<F>,
     external_addr: SocketAddr,
-    pub drain_token: DrainToken
+    pub drain_token: DrainToken,
 }
 
 const SIP_USER_AGENT: &str = concat!("rsipstack-server/", env!("CARGO_PKG_VERSION"));
@@ -187,7 +187,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         });
 
         Ok(Self {
-            cancel_token, 
+            cancel_token,
             drain_token,
             transport_layer,
             state,
@@ -265,7 +265,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                     Err(e) => error!("Request processing error: {:?}", e),
                 }
             }
-            
+
             r = Self::process_dialog_states(state.clone(), dialog_layer.clone(), state_receiver, handler_factory, cancel_token.clone(), self.drain_token.clone()) => {
                 match r {
                     Ok(_) => info!("Dialog state processing finished"),
@@ -432,7 +432,6 @@ impl<F: AudioHandlerFactory> SipServer<F> {
 
         Ok(())
     }
-
 }
 
 /// Get the first non-loopback network interface IP address
