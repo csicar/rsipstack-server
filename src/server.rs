@@ -274,10 +274,6 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                     Err(e) => error!("Dialog state processing error: {:?}", e),
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Received Ctrl+C, shutting down...");
-                cancel_token.cancel();
-            }
         }
 
         Ok(())
