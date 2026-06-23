@@ -97,6 +97,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Pass a factory closure that creates handlers for each call
     let server = SipServer::new(config, || EchoHandler).await?;
+    let cancel_token = server.cancel_token.clone();
+    let drain_token = server.drain_token.clone();
+
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("Ctrl-C received. Cancelling ...");
+        cancel_token.cancel();
+    });
+
+    let mut sigterm_stream = signal(SignalKind::terminate())?;
+    tokio::spawn(async move {
+        sigterm_stream.recv().await;
+        info!("Received SIGTERM. Draining ...");
+        drain_token.start_drain();
+    });
     server.run().await?;
     Ok(())
 }
@@ -215,3 +230,4 @@ To collect them, register a backend such as [`metrics-exporter-prometheus`](http
 | `rsipstack_server.ports.capacity` | gauge | — | Upper bound of allocatable RTP/RTCP port pairs. OS may have some ports already bound. |
 | `rsipstack_server.ports.allocation_attempts` | histogram | — | Number of attempts before a free port pair was found |
 | `rsipstack_server.ports.allocation_failures` | counter | — | Port allocation failures (pool exhausted) |
+| `rsipstack_server.drain_active` | gauge | — | 1 when the server is in drain mode, 0 otherwise |
