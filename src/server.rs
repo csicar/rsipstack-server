@@ -114,6 +114,7 @@ impl RespondToOptions {
     }
 
     pub fn set(&self, enabled: bool) {
+        debug!("RespondToOptions set to {}", enabled);
         self.0.store(enabled, Relaxed)
     }
 }
