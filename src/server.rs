@@ -17,8 +17,7 @@ use rsipstack::{EndpointBuilder, Error, Result};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::select;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::{select, time};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -219,20 +218,28 @@ impl<F: AudioHandlerFactory> SipServer<F> {
 
         let incoming = endpoint.incoming_transactions()?;
 
-        let mut sigterm = signal(SignalKind::terminate())?;
-
         let drain_token_clone = self.drain_token.clone();
         let cancel_token_clone = cancel_token.clone();
         let dialog_layer_clone = dialog_layer.clone();
-        gauge!("rsipstack_server.drain_active").set(0);
-        tokio::spawn(async move {
-            sigterm.recv().await;
-            info!("received SIGTERM, draining");
-            drain_token_clone.start_drain();
-            gauge!("rsipstack_server.drain_active").set(1);
+        let drain_gauge = gauge!("rsipstack_server.drain_active");
+        drain_gauge.set(0);
 
-            if dialog_layer_clone.len() == 0 {
-                cancel_token_clone.cancel();
+        // Drain monitor: polls until all dialogs close, then cancels
+        tokio::spawn(async move {
+            drain_token_clone.drain_triggered().await;
+            let mut interval = time::interval(Duration::from_secs(5));
+            drain_gauge.set(1);
+
+            loop {
+                interval.tick().await;
+                info!(
+                    "Draining. There are {} dialogs still active.",
+                    dialog_layer_clone.len()
+                );
+                if dialog_layer_clone.len() == 0 {
+                    info!("Drain completed. Initiating shutdown.");
+                    cancel_token_clone.cancel();
+                }
             }
         });
 
@@ -268,7 +275,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                 }
             }
 
-            r = Self::process_dialog_states(state.clone(), dialog_layer.clone(), state_receiver, handler_factory, cancel_token.clone(), self.drain_token.clone()) => {
+            r = Self::process_dialog_states(state.clone(), dialog_layer.clone(), state_receiver, handler_factory)=> {
                 match r {
                     Ok(_) => info!("Dialog state processing finished"),
                     Err(e) => error!("Dialog state processing error: {:?}", e),
@@ -371,8 +378,6 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         dialog_layer: Arc<DialogLayer>,
         mut state_receiver: DialogStateReceiver,
         handler_factory: Arc<F>,
-        cancel_token: CancellationToken,
-        drain_token: DrainToken,
     ) -> Result<()> {
         while let Some(state) = state_receiver.recv().await {
             match state {
@@ -411,13 +416,6 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                     info!(dialog_id = %id, reason = ?reason, "Call terminated");
                     counter!("rsipstack_server.calls.terminated_total", "reason" => format!("{:?}", reason)).increment(1);
                     dialog_layer.remove_dialog(&id);
-
-                    if drain_token.is_draining() {
-                        if dialog_layer.len() == 0 {
-                            info!("Last dialog terminated during drain. Starting shutdown.");
-                            cancel_token.cancel();
-                        }
-                    }
                 }
                 DialogState::Early(id, _) => {
                     debug!(dialog_id = %id, "Early dialog state");

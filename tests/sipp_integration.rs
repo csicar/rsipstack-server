@@ -327,7 +327,7 @@ async fn test_drain() {
                     "-m",
                     "1",
                     "-d",
-                    "5000", // 5 second call
+                    "5000", // milliseconds
                     "-timeout",
                     "30s",
                     "-timeout_error",
@@ -387,7 +387,7 @@ async fn test_drain() {
     );
 
     // Server should now shut itself down since all dialogs are gone
-    let shutdown = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
+    let shutdown = tokio::time::timeout(Duration::from_secs(10), server_handle).await;
     assert!(
         shutdown.is_ok(),
         "Server did not shut down after drain completed"
