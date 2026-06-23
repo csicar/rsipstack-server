@@ -15,6 +15,8 @@ use rsipstack::transport::udp::UdpConnection;
 use rsipstack::transport::TransportLayer;
 use rsipstack::{EndpointBuilder, Error, Result};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{select, time};
@@ -99,6 +101,22 @@ where
         self()
     }
 }
+#[derive(Clone)]
+pub struct RespondToOptions(Arc<AtomicBool>);
+
+impl RespondToOptions {
+    pub fn new(enabled: bool) -> Self {
+        RespondToOptions(Arc::new(AtomicBool::new(enabled)))
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.0.load(Relaxed)
+    }
+
+    pub fn set(&self, enabled: bool) {
+        self.0.store(enabled, Relaxed)
+    }
+}
 
 /// SIP Server
 pub struct SipServer<F: AudioHandlerFactory> {
@@ -109,6 +127,7 @@ pub struct SipServer<F: AudioHandlerFactory> {
     local_addr: SocketAddr,
     handler_factory: Arc<F>,
     external_addr: SocketAddr,
+    respond_to_options: RespondToOptions,
 }
 
 const SIP_USER_AGENT: &str = concat!("rsipstack-server/", env!("CARGO_PKG_VERSION"));
@@ -193,6 +212,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
             local_addr,
             external_addr: external_addr.unwrap_or(local_addr),
             handler_factory: Arc::new(handler_factory),
+            respond_to_options: RespondToOptions::new(true),
         })
     }
 
@@ -223,10 +243,13 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         let dialog_layer_clone = dialog_layer.clone();
         let drain_gauge = gauge!("rsipstack_server.drain_active");
         drain_gauge.set(0);
+        let respond_to_options = self.respond_to_options.clone();
+        let respond_to_options_drain = self.respond_to_options.clone();
 
         // Drain monitor: polls until all dialogs close, then cancels
         tokio::spawn(async move {
             drain_token_clone.drain_triggered().await;
+            respond_to_options_drain.set(false);
             let mut interval = time::interval(Duration::from_secs(5));
             drain_gauge.set(1);
 
@@ -236,7 +259,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                     "Draining. There are {} dialogs still active.",
                     dialog_layer_clone.len()
                 );
-                if dialog_layer_clone.len() == 0 {
+                if dialog_layer_clone.is_empty() {
                     info!("Drain completed. Initiating shutdown.");
                     cancel_token_clone.cancel();
                 }
@@ -267,7 +290,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                 incoming,
                 state_sender,
                 contact,
-                self.drain_token.clone()
+                respond_to_options
             ) => {
                 match r {
                     Ok(_) => info!("Request processing finished"),
@@ -292,7 +315,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         mut incoming: TransactionReceiver,
         state_sender: DialogStateSender,
         contact: rsip::Uri,
-        drain_token: DrainToken,
+        respond_to_options: RespondToOptions,
     ) -> Result<()> {
         while let Some(mut tx) = incoming.recv().await {
             debug!(
@@ -353,7 +376,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                     });
                 }
                 rsip::Method::Options => {
-                    if !drain_token.is_draining() {
+                    if respond_to_options.enabled() {
                         // Reply to OPTIONS with OK (basic keep-alive support)
                         tx.reply(rsip::StatusCode::OK).await?;
                     }
