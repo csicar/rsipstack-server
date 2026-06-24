@@ -101,6 +101,9 @@ where
         self()
     }
 }
+
+/// Thread-safe flag controlling whether [`crate::server::SipServer`] responds to `OPTIONS` requests.
+/// Set to `false` during drain to signal upstream proxies that no new calls should be routed here.
 #[derive(Clone)]
 pub struct RespondToOptions(Arc<AtomicBool>);
 
