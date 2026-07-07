@@ -39,7 +39,7 @@ pub(crate) struct RtpSendState {
     pub ssrc: u32,
     /// Current sequence number (auto-increments)
     pub sequence: u16,
-    /// Current timestamp (increments by 960 per frame for 48kHz)
+    /// Current timestamp (increments per frame by the codec's RTP clock rate)
     pub timestamp: u32,
     /// Payload type (determined by negotiated codec)
     pub payload_type: u8,
@@ -59,8 +59,22 @@ impl RtpSendState {
     pub fn next(&mut self) -> RtpSendState {
         let current = self.clone();
         self.sequence = self.sequence.wrapping_add(1);
-        self.timestamp = self.timestamp.wrapping_add(960); // 20ms at 48kHz
+        self.timestamp = self
+            .timestamp
+            .wrapping_add(rtp_timestamp_increment(self.payload_type));
         current
+    }
+}
+
+/// RTP timestamp advance per 20ms frame for a given payload type.
+///
+/// Per RFC 3551, PCMU/PCMA use an 8kHz clock (160 per 20ms frame).
+/// Dynamic payload types are only ever negotiated for Opus today, which
+/// uses a 48kHz clock (960 per 20ms frame).
+pub fn rtp_timestamp_increment(payload_type: u8) -> u32 {
+    match payload_type {
+        0 | 8 => 160,
+        _ => 960,
     }
 }
 
@@ -300,6 +314,77 @@ mod tests {
         let frame = AudioFrame::new(vec![100, 200, 300]);
 
         assert_eq!(frame.samples, vec![100, 200, 300]);
+    }
+
+    #[test]
+    fn test_rtp_timestamp_increment_pcmu() {
+        assert_eq!(rtp_timestamp_increment(0), 160);
+    }
+
+    #[test]
+    fn test_rtp_timestamp_increment_pcma() {
+        assert_eq!(rtp_timestamp_increment(8), 160);
+    }
+
+    #[test]
+    fn test_rtp_timestamp_increment_dynamic_payload_type_is_48khz() {
+        // Dynamic payload types (96-127) are only ever negotiated for Opus
+        // today, which runs on a 48kHz RTP clock.
+        assert_eq!(rtp_timestamp_increment(96), 960);
+    }
+
+    #[test]
+    fn test_next_advances_timestamp_by_160_for_pcmu() {
+        let mut state = RtpSendState::new(0);
+        let initial_timestamp = state.timestamp;
+
+        state.next();
+
+        assert_eq!(state.timestamp, initial_timestamp.wrapping_add(160));
+    }
+
+    #[test]
+    fn test_next_advances_timestamp_by_160_for_pcma() {
+        let mut state = RtpSendState::new(8);
+        let initial_timestamp = state.timestamp;
+
+        state.next();
+
+        assert_eq!(state.timestamp, initial_timestamp.wrapping_add(160));
+    }
+
+    #[test]
+    fn test_next_advances_timestamp_by_960_for_opus() {
+        let mut state = RtpSendState::new(96);
+        let initial_timestamp = state.timestamp;
+
+        state.next();
+
+        assert_eq!(state.timestamp, initial_timestamp.wrapping_add(960));
+    }
+
+    #[test]
+    fn test_next_advances_sequence_by_one() {
+        let mut state = RtpSendState::new(0);
+        let initial_sequence = state.sequence;
+
+        state.next();
+
+        assert_eq!(state.sequence, initial_sequence.wrapping_add(1));
+    }
+
+    #[test]
+    fn test_next_returns_state_before_advancing() {
+        let mut state = RtpSendState::new(0);
+        let initial_timestamp = state.timestamp;
+        let initial_sequence = state.sequence;
+
+        let returned = state.next();
+
+        assert_eq!(returned.timestamp, initial_timestamp);
+        assert_eq!(returned.sequence, initial_sequence);
+        assert_eq!(state.timestamp, initial_timestamp.wrapping_add(160));
+        assert_eq!(state.sequence, initial_sequence.wrapping_add(1));
     }
 
     mod try_allocate_socket_pair {
