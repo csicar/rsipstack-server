@@ -30,6 +30,7 @@ rand = "0.8"
 anyhow = "1.0"
 opus = { version = "0.3", optional = true }
 metrics = "0.24.6"
+strum = { version = "0.28.0", features = ["derive"] }
 
 [dev-dependencies]
 clap = { version = "4", features = ["derive"] }

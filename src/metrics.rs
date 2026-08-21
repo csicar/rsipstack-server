@@ -9,8 +9,9 @@
 //! separate hand-written list of variants.
 
 use std::sync::Once;
+
 use rsipstack::dialog::dialog::TerminatedReason;
-use rsipstack::sip::StatusCode;
+use strum::{EnumIter, IntoEnumIterator, IntoStaticStr};
 
 pub const CALLS_REJECTED_TOTAL: &str = "rsipstack_server.calls.rejected_total";
 pub const CALLS_ACCEPTED_TOTAL: &str = "rsipstack_server.calls.accepted_total";
@@ -22,7 +23,8 @@ pub const PORTS_ALLOCATION_ATTEMPTS: &str = "rsipstack_server.ports.allocation_a
 pub const PORTS_ALLOCATION_FAILURES: &str = "rsipstack_server.ports.allocation_failures";
 pub const DRAIN_ACTIVE: &str = "rsipstack_server.drain_active";
 
-#[derive(Debug, Clone, Copy)]
+/// Label values for the `reason` label on [`CALLS_REJECTED_TOTAL`].
+#[derive(Debug, Clone, Copy, EnumIter)]
 pub enum RejectReason {
     SdpOfferInvalid,
     RtpPortPoolExhausted,
@@ -39,46 +41,51 @@ impl RejectReason {
     }
 }
 
-/// Maps a [`TerminatedReason`] to its metric label, deliberately dropping the `StatusCode`
-/// payload carried by `ProxyError`, `UacOther`, and `UasOther`. That payload can embed an
-/// arbitrary, remote-controlled reason phrase (`StatusCode::Other(u16, String)`), which
-/// would otherwise let a peer inject unbounded label values into this metric. The specific
-/// status code is still available in the log line emitted alongside this counter.
+/// Label values for the `reason` label on [`CALLS_TERMINATED_TOTAL`].
 ///
-/// This match has no wildcard arm, so if rsipstack ever adds a new `TerminatedReason`
-/// variant, this fails to *compile* until it's given a label here.
-fn terminated_reason_label(reason: &TerminatedReason) -> &'static str {
-    match reason {
-        TerminatedReason::Timeout => "Timeout",
-        TerminatedReason::UacCancel => "UacCancel",
-        TerminatedReason::UacBye => "UacBye",
-        TerminatedReason::UasBye => "UasBye",
-        TerminatedReason::UacBusy => "UacBusy",
-        TerminatedReason::UasBusy => "UasBusy",
-        TerminatedReason::UasDecline => "UasDecline",
-        TerminatedReason::ProxyError(_) => "ProxyError",
-        TerminatedReason::ProxyAuthRequired => "ProxyAuthRequired",
-        TerminatedReason::UacOther(_) => "UacOther",
-        TerminatedReason::UasOther(_) => "UasOther",
-    }
+/// Mirrors [`TerminatedReason`] with the `StatusCode` payloads of `ProxyError`, `UacOther`,
+/// and `UasOther` deliberately dropped. That payload can embed an arbitrary,
+/// remote-controlled reason phrase (`StatusCode::Other(u16, String)`), which would otherwise
+/// let a peer inject unbounded label values into this metric. Nothing in this crate reads
+/// the status code apart from the `"Call terminated"` log line emitted alongside this
+/// counter, which still prints it in full.
+///
+/// A local, payload-free mirror is also what makes the label set enumerable: `EnumIter`
+/// cannot be derived on `TerminatedReason` itself, since it is a foreign type.
+#[derive(Debug, Clone, Copy, EnumIter, IntoStaticStr)]
+pub enum TerminatedLabel {
+    Timeout,
+    UacCancel,
+    UacBye,
+    UasBye,
+    UacBusy,
+    UasBusy,
+    UasDecline,
+    ProxyError,
+    ProxyAuthRequired,
+    UacOther,
+    UasOther,
 }
 
-/// One sample per [`TerminatedReason`] variant, used only to zero-init every label in
-/// [`ensure_metrics_initialized`]. The `StatusCode` payloads are ignored by [`terminated_reason_label`],
-/// so their value here is arbitrary. Keep in sync with `terminated_reason_label`.
-const ALL_TERMINATED_REASONS: [TerminatedReason; 11] = [
-    TerminatedReason::Timeout,
-    TerminatedReason::UacCancel,
-    TerminatedReason::UacBye,
-    TerminatedReason::UasBye,
-    TerminatedReason::UacBusy,
-    TerminatedReason::UasBusy,
-    TerminatedReason::UasDecline,
-    TerminatedReason::ProxyError(StatusCode::OK),
-    TerminatedReason::ProxyAuthRequired,
-    TerminatedReason::UacOther(StatusCode::OK),
-    TerminatedReason::UasOther(StatusCode::OK),
-];
+impl From<&TerminatedReason> for TerminatedLabel {
+    /// This match has no wildcard arm, so if rsipstack ever adds a new `TerminatedReason`
+    /// variant, this fails to *compile* until it is given a label here.
+    fn from(reason: &TerminatedReason) -> Self {
+        match reason {
+            TerminatedReason::Timeout => Self::Timeout,
+            TerminatedReason::UacCancel => Self::UacCancel,
+            TerminatedReason::UacBye => Self::UacBye,
+            TerminatedReason::UasBye => Self::UasBye,
+            TerminatedReason::UacBusy => Self::UacBusy,
+            TerminatedReason::UasBusy => Self::UasBusy,
+            TerminatedReason::UasDecline => Self::UasDecline,
+            TerminatedReason::ProxyError(_) => Self::ProxyError,
+            TerminatedReason::ProxyAuthRequired => Self::ProxyAuthRequired,
+            TerminatedReason::UacOther(_) => Self::UacOther,
+            TerminatedReason::UasOther(_) => Self::UasOther,
+        }
+    }
+}
 
 pub fn calls_rejected(reason: RejectReason) -> metrics::Counter {
     metrics::counter!(
@@ -110,11 +117,13 @@ pub fn calls_dialog_not_found() -> metrics::Counter {
     )
 }
 
-pub fn calls_terminated(reason: &TerminatedReason) -> metrics::Counter {
+/// Accepts a `&TerminatedReason` at the call site and a bare [`TerminatedLabel`] from
+/// [`ensure_initialized`], which only has labels to iterate over and no reason to construct.
+pub fn calls_terminated(reason: impl Into<TerminatedLabel>) -> metrics::Counter {
     metrics::counter!(
         description: "Number of terminated SIP calls",
         CALLS_TERMINATED_TOTAL,
-        "reason" => terminated_reason_label(reason)
+        "reason" => <&'static str>::from(reason.into())
     )
 }
 
@@ -160,20 +169,19 @@ pub fn drain_active() -> metrics::Gauge {
 /// time (`ports.capacity` on `RtpPortRange::new`, `drain_active` when a server starts
 /// serving) are left alone here to avoid clobbering a value set before this runs.
 pub fn ensure_initialized() {
-    for reason in [
-        RejectReason::SdpOfferInvalid,
-        RejectReason::RtpPortPoolExhausted,
-        RejectReason::UdpConnectFailed,
-    ] {
-        calls_rejected(reason).absolute(0);
-    }
-    calls_accepted().absolute(0);
-    calls_active().set(0);
-    calls_dialog_not_found().absolute(0);
-    for reason in &ALL_TERMINATED_REASONS {
-        calls_terminated(reason).absolute(0);
-    }
-    ports_allocation_failures().absolute(0);
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        for reason in RejectReason::iter() {
+            calls_rejected(reason).absolute(0);
+        }
+        calls_accepted().absolute(0);
+        calls_active().set(0);
+        calls_dialog_not_found().absolute(0);
+        for label in TerminatedLabel::iter() {
+            calls_terminated(label).absolute(0);
+        }
+        ports_allocation_failures().absolute(0);
+    });
 }
 
 pub struct ScopedGauge {
