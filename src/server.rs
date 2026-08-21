@@ -168,6 +168,8 @@ impl<F: AudioHandlerFactory> SipServer<F> {
     /// # }
     /// ```
     pub async fn new(config: ServerConfig, handler_factory: F) -> Result<Self> {
+        metrics::initialize_metrics();
+
         let cancel_token = CancellationToken::new();
         let drain_token = DrainToken::new();
 

@@ -1,8 +1,10 @@
 //! Central registry for all metrics emitted by rsipstack-server.
 //!
 //! All metric names, label values, and counter initialization must be defined here.
-//! Call [`initialize_metrics`] once at startup, after a metrics recorder has been installed.
+//! [`initialize_metrics`] is called by `SipServer::new`, so applications only need to
+//! install a metrics recorder before constructing a server.
 
+use std::sync::Once;
 use rsipstack::dialog::dialog::TerminatedReason;
 use rsipstack::sip::StatusCode;
 
@@ -143,8 +145,12 @@ pub fn drain_active() -> metrics::Gauge {
 }
 
 /// Pre-registers metrics with a value of zero so they appear in scrapes before the
-/// events they track have ever occurred. Call once at startup, after the metrics
-/// recorder has been installed.
+/// events they track have ever occurred. Called by `SipServer::new`; a metrics
+/// recorder must be installed before that point for these values to be recorded.
+///
+/// Runs at most once per process. `calls.active` is a process-global gauge shared by
+/// every server, so a second `SipServer::new` must not reset it while the first server
+/// still has live calls — that would make the gauge drift negative as those calls end.
 ///
 /// Gauges that are set by the code owning their lifecycle at the correct point in
 /// time (`ports.capacity` on `RtpPortRange::new`, `drain_active` when a server starts

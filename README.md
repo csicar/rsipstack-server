@@ -218,7 +218,7 @@ MIT
 ## Metrics
 
 The following metrics are exported using the [`metrics`](https://crates.io/crates/metrics) facade.
-To collect them, register a backend such as [`metrics-exporter-prometheus`](https://crates.io/crates/metrics-exporter-prometheus) in your application, then call `rsipstack_server::metrics::initialize_metrics()` once at startup, after the backend is installed, so counters appear in scrapes at zero before their events occur.
+To collect them, register a backend such as [`metrics-exporter-prometheus`](https://crates.io/crates/metrics-exporter-prometheus) in your application, before constructing the `SipServer`. All counters below are pre-registered at zero during `SipServer::new`, so they appear in scrapes before the events they track have occurred.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|

@@ -51,7 +51,7 @@ mod call_handler;
 pub mod codec;
 mod drain;
 mod media;
-pub mod metrics;
+mod metrics;
 mod server;
 
 // Re-export public API
