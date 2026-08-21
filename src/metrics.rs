@@ -1,8 +1,12 @@
 //! Central registry for all metrics emitted by rsipstack-server.
 //!
 //! All metric names, label values, and counter initialization must be defined here.
-//! [`ensure_metrics_initialized`] is called by `SipServer::new`, so applications only need to
+//! [`ensure_initialized`] is called by `SipServer::new`, so applications only need to
 //! install a metrics recorder before constructing a server.
+//!
+//! Every labelled metric gets its label values from an enum deriving [`strum::EnumIter`],
+//! so the set of labels is defined exactly once: at the enum. Nothing here keeps a
+//! separate hand-written list of variants.
 
 use std::sync::Once;
 use rsipstack::dialog::dialog::TerminatedReason;
