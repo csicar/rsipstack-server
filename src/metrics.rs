@@ -1,7 +1,7 @@
 //! Central registry for all metrics emitted by rsipstack-server.
 //!
 //! All metric names, label values, and counter initialization must be defined here.
-//! [`initialize_metrics`] is called by `SipServer::new`, so applications only need to
+//! [`ensure_metrics_initialized`] is called by `SipServer::new`, so applications only need to
 //! install a metrics recorder before constructing a server.
 
 use std::sync::Once;
@@ -60,7 +60,7 @@ fn terminated_reason_label(reason: &TerminatedReason) -> &'static str {
 }
 
 /// One sample per [`TerminatedReason`] variant, used only to zero-init every label in
-/// [`initialize_metrics`]. The `StatusCode` payloads are ignored by [`terminated_reason_label`],
+/// [`ensure_metrics_initialized`]. The `StatusCode` payloads are ignored by [`terminated_reason_label`],
 /// so their value here is arbitrary. Keep in sync with `terminated_reason_label`.
 const ALL_TERMINATED_REASONS: [TerminatedReason; 11] = [
     TerminatedReason::Timeout,
@@ -155,7 +155,7 @@ pub fn drain_active() -> metrics::Gauge {
 /// Gauges that are set by the code owning their lifecycle at the correct point in
 /// time (`ports.capacity` on `RtpPortRange::new`, `drain_active` when a server starts
 /// serving) are left alone here to avoid clobbering a value set before this runs.
-pub fn initialize_metrics() {
+pub fn ensure_initialized() {
     for reason in [
         RejectReason::SdpOfferInvalid,
         RejectReason::RtpPortPoolExhausted,
