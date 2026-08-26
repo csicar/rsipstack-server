@@ -5,7 +5,7 @@ use crate::call_handler::CallHandler;
 use crate::drain::DrainToken;
 use crate::media::rtp::RtpPortRange;
 use crate::media::sdp::AdvertiseIpAddr;
-use metrics::{counter, gauge};
+use crate::metrics;
 use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
 use rsipstack::sip as rsip;
@@ -168,6 +168,8 @@ impl<F: AudioHandlerFactory> SipServer<F> {
     /// # }
     /// ```
     pub async fn new(config: ServerConfig, handler_factory: F) -> Result<Self> {
+        metrics::ensure_initialized();
+
         let cancel_token = CancellationToken::new();
         let drain_token = DrainToken::new();
 
@@ -245,7 +247,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
         let drain_token_clone = self.drain_token.clone();
         let cancel_token_clone = cancel_token.clone();
         let dialog_layer_clone = dialog_layer.clone();
-        let drain_gauge = gauge!("rsipstack_server.drain_active");
+        let drain_gauge = metrics::drain_active();
         drain_gauge.set(0);
         let respond_to_options = self.respond_to_options.clone();
         let respond_to_options_drain = self.respond_to_options.clone();
@@ -344,8 +346,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                             }
                             None => {
                                 info!("Dialog not found for in-dialog request");
-                                counter!("rsipstack_server.calls.dialog_not_found_total")
-                                    .increment(1);
+                                metrics::calls_dialog_not_found().increment(1);
                                 tx.reply(rsip::StatusCode::CallTransactionDoesNotExist)
                                     .await?;
                                 continue;
@@ -441,7 +442,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                 }
                 DialogState::Terminated(id, reason) => {
                     info!(dialog_id = %id, reason = ?reason, "Call terminated");
-                    counter!("rsipstack_server.calls.terminated_total", "reason" => format!("{:?}", reason)).increment(1);
+                    metrics::calls_terminated(&reason).increment(1);
                     dialog_layer.remove_dialog(&id);
                 }
                 DialogState::Early(id, _) => {

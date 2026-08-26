@@ -6,13 +6,12 @@ use std::{
     sync::atomic::{AtomicU16, Ordering::Relaxed},
 };
 
-use metrics::{counter, gauge, histogram};
 use rsipstack::Error::Error;
 use rtp_rs::RtpReader;
 use tokio::net::UdpSocket;
 use tracing::{debug, trace, warn};
 
-use crate::{media::PeerSocketAddr, server::LocalIpAddr};
+use crate::{media::PeerSocketAddr, metrics, server::LocalIpAddr};
 
 /// Represents an audio frame with decoded PCM samples
 ///
@@ -153,7 +152,7 @@ impl RtpPortRange {
             last_rtp_port,
             current_rtp_port: AtomicU16::new(min_port),
         };
-        gauge!(unit: metrics::Unit::Count, description: "Upper bound of allocatable RTP/RTCP port pairs. OS may have some ports bound.", "rsipstack_server.ports.capacity").set(range.capacity());
+        metrics::ports_capacity().set(range.capacity());
 
         Ok(range)
     }
@@ -245,20 +244,11 @@ pub async fn try_allocate_socket_pair(
                 "Found free socket pair {socket_pair:?} after {} attempts",
                 num_attempts + 1
             );
-            histogram!(
-                unit: metrics::Unit::Count,
-                description: "Number of attempts before free port pair was found",
-                "rsipstack_server.ports.allocation_attempts"
-            )
-            .record(num_attempts + 1);
+            metrics::ports_allocation_attempts().record(num_attempts + 1);
             return Some(socket_pair);
         }
     }
-    counter!(
-        description: "Number of times the RTP port pool was exhausted and no socket pair could be bound",
-        "rsipstack_server.ports.allocation_failures"
-    )
-    .increment(1);
+    metrics::ports_allocation_failures().increment(1);
     None
 }
 
