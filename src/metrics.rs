@@ -24,21 +24,11 @@ pub const PORTS_ALLOCATION_FAILURES: &str = "rsipstack_server.ports.allocation_f
 pub const DRAIN_ACTIVE: &str = "rsipstack_server.drain_active";
 
 /// Label values for the `reason` label on [`CALLS_REJECTED_TOTAL`].
-#[derive(Debug, Clone, Copy, EnumIter)]
+#[derive(Debug, Clone, Copy, EnumIter, IntoStaticStr)]
 pub enum RejectReason {
     SdpOfferInvalid,
     RtpPortPoolExhausted,
     UdpConnectFailed,
-}
-
-impl RejectReason {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::SdpOfferInvalid => "sdp_offer_invalid",
-            Self::RtpPortPoolExhausted => "rtp_port_pool_exhausted",
-            Self::UdpConnectFailed => "udp_connect_failed",
-        }
-    }
 }
 
 /// Label values for the `reason` label on [`CALLS_TERMINATED_TOTAL`].
@@ -91,7 +81,7 @@ pub fn calls_rejected(reason: RejectReason) -> metrics::Counter {
     metrics::counter!(
         description: "Number of rejected incoming SIP calls",
         CALLS_REJECTED_TOTAL,
-        "reason" => reason.as_str()
+        "reason" => <&'static str>::from(reason)
     )
 }
 

@@ -223,7 +223,7 @@ To collect them, register a backend such as [`metrics-exporter-prometheus`](http
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `rsipstack_server.calls.accepted_total` | counter | — | Total calls successfully accepted |
-| `rsipstack_server.calls.rejected_total` | counter | `reason`: `sdp_offer_invalid`, `rtp_port_pool_exhausted`, `udp_connect_failed` | Calls rejected before being accepted |
+| `rsipstack_server.calls.rejected_total` | counter | `reason`: `SdpOfferInvalid`, `RtpPortPoolExhausted`, `UdpConnectFailed` | Calls rejected before being accepted |
 | `rsipstack_server.calls.active` | gauge | — | Currently active calls |
 | `rsipstack_server.calls.terminated_total` | counter | `reason`: variant name of [`TerminatedReason`](https://docs.rs/rsipstack/latest/rsipstack/dialog/dialog/enum.TerminatedReason.html) (e.g. `Timeout`, `ProxyError`) — status codes carried by `ProxyError`/`UacOther`/`UasOther` are not included in the label | Calls terminated after being accepted |
 | `rsipstack_server.calls.dialog_not_found_total` | counter | — | Requests received for unknown dialogs |
