@@ -9,7 +9,6 @@ use crate::codec::{create_codec, Codec};
 use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
 use crate::metrics;
-use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -219,7 +218,8 @@ impl MediaSession {
     ) {
         let mut packet_count = 0u64;
         let mut rtp_state = RtpSendState::new(payload_type);
-        let mut previous_instant: Option<Instant> = None;
+        let mut rtp_send_timing_deviation_metric =
+            metrics::rtp_send_timing_deviation(EXPECTED_SEND_INTERVAL.duration());
 
         loop {
             tokio::select! {
@@ -250,13 +250,7 @@ impl MediaSession {
                             match socket.send(&packet).await {
                                 Ok(_) => {
                                     packet_count += 1;
-                                    let now = Instant::now();
-                                    if let Some(prev) = previous_instant {
-                                        let elapsed_time = now - prev;
-                                        let deviation = elapsed_time.as_secs_f64() - EXPECTED_SEND_INTERVAL.duration().as_secs_f64();
-                                        crate::metrics::rtp_send_timing_deviation().record(deviation);
-                                    }
-                                    previous_instant = Some(now);
+                                    rtp_send_timing_deviation_metric.record();
                                     metrics::rtp_packets_sent().increment(1);
                                     if packet_count % 500 == 1 {
                                         debug!(

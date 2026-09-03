@@ -8,10 +8,12 @@
 //! so the set of labels is defined exactly once: at the enum. Nothing here keeps a
 //! separate hand-written list of variants.
 
-use std::sync::Once;
+use std::{sync::Once, time::Duration};
 
+use metrics::Histogram;
 use rsipstack::dialog::dialog::TerminatedReason;
 use strum::{EnumIter, IntoEnumIterator, IntoStaticStr};
+use tokio::time::Instant;
 
 pub const CALLS_REJECTED_TOTAL: &str = "rsipstack_server.calls.rejected_total";
 pub const CALLS_ACCEPTED_TOTAL: &str = "rsipstack_server.calls.accepted_total";
@@ -165,16 +167,74 @@ pub fn rtp_send_errors() -> metrics::Counter {
     )
 }
 
+/// Records how far the real interval between two events drifts from an expected
+/// fixed cadence.
+///
+/// Each [`record`](Self::record) call measures the time since the previous call and
+/// emits `elapsed - expected_interval` (in seconds) to the wrapped histogram: zero
+/// means the event landed exactly on schedule, a positive sample means it was late,
+/// and a negative sample means it fired early. The very first call has no predecessor
+/// to compare against, so it only arms the clock and records nothing.
+///
+/// This is stateful — it owns the `last_tick` timestamp — so a single instance must be
+/// kept for the lifetime of the thing being measured and its `record` calls must all
+/// come from the same source of ticks. For RTP sends this means one instance per send
+/// task, ticked once per successful packet; see [`rtp_send_timing_deviation`].
+pub struct TimingDeviationMetric {
+    /// The cadence the events are supposed to keep; every sample is measured relative to it.
+    expected_interval: Duration,
+    /// Timestamp of the previous [`record`](Self::record) call, or `None` before the first tick.
+    last_tick: Option<Instant>,
+    /// Histogram the per-tick deviation (in seconds) is written to.
+    metric: Histogram,
+}
+
+impl TimingDeviationMetric {
+    /// Creates a metric that reports deviation from `expected_interval`, writing samples
+    /// into `metric`.
+    ///
+    /// Pass a [`Histogram`] obtained from your own `metrics::histogram!` call (whose unit
+    /// should be seconds, since that is what [`record`](Self::record) emits). Within this
+    /// crate, [`rtp_send_timing_deviation`] wires up the right histogram and interval for
+    /// RTP sends; external callers construct instances through this constructor directly.
+    pub fn new(metric: Histogram, expected_interval: Duration) -> Self {
+        Self {
+            expected_interval,
+            metric,
+            last_tick: None,
+        }
+    }
+
+    /// Records one tick.
+    ///
+    /// If a previous tick exists, emits `elapsed_since_previous - expected_interval`
+    /// (seconds) to the histogram; the first call after construction only stores the
+    /// current time and records nothing. Either way the internal clock advances to now,
+    /// so consecutive samples measure back-to-back gaps and a stall surfaces as a single
+    /// large sample rather than being smeared across several.
+    pub fn record(&mut self) {
+        let now = Instant::now();
+        if let Some(prev) = self.last_tick {
+            let elapsed_time = now - prev;
+            let deviation = elapsed_time.as_secs_f64() - self.expected_interval.as_secs_f64();
+            self.metric.record(deviation);
+        }
+        self.last_tick = Some(now);
+    }
+}
+
 /// Deviation of the time since the previous successful send from the expected
 /// 20ms (`a=ptime:20`) send interval. Recorded regardless of magnitude, so a
 /// stall shows up as a single large sample rather than being hidden by any
 /// catch-up behavior.
-pub fn rtp_send_timing_deviation() -> metrics::Histogram {
-    metrics::histogram!(
+pub fn rtp_send_timing_deviation(expected_interval: Duration) -> TimingDeviationMetric {
+    let metric = metrics::histogram!(
         unit: metrics::Unit::Seconds,
         description: "Deviation from the expected 20ms interval between RTP packet sends",
         RTP_SEND_TIMING_DEVIATION_SECONDS
-    )
+    );
+
+    TimingDeviationMetric::new(metric, expected_interval)
 }
 
 /// Pre-registers metrics with a value of zero so they appear in scrapes before the
