@@ -8,10 +8,14 @@ use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer};
 use crate::codec::{create_codec, Codec};
 use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
+use crate::metrics;
+use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
+
+const EXPECTED_SEND_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Media session for handling RTP audio
 pub struct MediaSession {
@@ -217,6 +221,7 @@ impl MediaSession {
     ) {
         let mut packet_count = 0u64;
         let mut rtp_state = RtpSendState::new(payload_type);
+        let mut previous_instant: Option<Instant> = None;
 
         loop {
             tokio::select! {
@@ -247,6 +252,14 @@ impl MediaSession {
                             match socket.send(&packet).await {
                                 Ok(_) => {
                                     packet_count += 1;
+                                    let now = Instant::now();
+                                    if let Some(prev) = previous_instant {
+                                        let elapsed_time = now - prev;
+                                        let deviation = elapsed_time.as_secs_f64() - EXPECTED_SEND_INTERVAL.as_secs_f64();
+                                        crate::metrics::rtp_send_timing_deviation().record(deviation);
+                                    }
+                                    previous_instant = Some(now);
+                                    metrics::rtp_packets_sent().increment(1);
                                     if packet_count % 500 == 1 {
                                         debug!(
                                             count = packet_count,
@@ -258,6 +271,7 @@ impl MediaSession {
                                     }
                                 }
                                 Err(e) => {
+                                    metrics::rtp_send_errors().increment(1);
                                     error!("RTP send error: {}", e);
                                     break;
                                 }

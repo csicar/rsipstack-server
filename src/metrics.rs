@@ -22,6 +22,10 @@ pub const PORTS_CAPACITY: &str = "rsipstack_server.ports.capacity";
 pub const PORTS_ALLOCATION_ATTEMPTS: &str = "rsipstack_server.ports.allocation_attempts";
 pub const PORTS_ALLOCATION_FAILURES: &str = "rsipstack_server.ports.allocation_failures";
 pub const DRAIN_ACTIVE: &str = "rsipstack_server.drain_active";
+pub const RTP_PACKETS_SENT_TOTAL: &str = "rsipstack_server.rtp.packets_sent_total";
+pub const RTP_SEND_ERRORS_TOTAL: &str = "rsipstack_server.rtp.send_errors_total";
+pub const RTP_SEND_TIMING_DEVIATION_SECONDS: &str =
+    "rsipstack_server.rtp.send_timing_deviation_seconds";
 
 /// Label values for the `reason` label on [`CALLS_REJECTED_TOTAL`].
 #[derive(Debug, Clone, Copy, EnumIter, IntoStaticStr)]
@@ -147,6 +151,32 @@ pub fn drain_active() -> metrics::Gauge {
     )
 }
 
+pub fn rtp_packets_sent() -> metrics::Counter {
+    metrics::counter!(
+        description: "Number of RTP packets successfully sent",
+        RTP_PACKETS_SENT_TOTAL
+    )
+}
+
+pub fn rtp_send_errors() -> metrics::Counter {
+    metrics::counter!(
+        description: "Number of RTP packet send failures",
+        RTP_SEND_ERRORS_TOTAL
+    )
+}
+
+/// Deviation of the time since the previous successful send from the expected
+/// 20ms (`a=ptime:20`) send interval. Recorded regardless of magnitude, so a
+/// stall shows up as a single large sample rather than being hidden by any
+/// catch-up behavior.
+pub fn rtp_send_timing_deviation() -> metrics::Histogram {
+    metrics::histogram!(
+        unit: metrics::Unit::Seconds,
+        description: "Deviation from the expected 20ms interval between RTP packet sends",
+        RTP_SEND_TIMING_DEVIATION_SECONDS
+    )
+}
+
 /// Pre-registers metrics with a value of zero so they appear in scrapes before the
 /// events they track have ever occurred. Called by `SipServer::new`; a metrics
 /// recorder must be installed before that point for these values to be recorded.
@@ -171,6 +201,8 @@ pub fn ensure_initialized() {
             calls_terminated(label).absolute(0);
         }
         ports_allocation_failures().absolute(0);
+        rtp_packets_sent().absolute(0);
+        rtp_send_errors().absolute(0);
     });
 }
 
