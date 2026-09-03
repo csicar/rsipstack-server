@@ -282,3 +282,94 @@ impl Drop for ScopedGauge {
         self.gauge.decrement(1);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use metrics::HistogramFn;
+    use std::sync::{Arc, Mutex};
+    use tokio::time::advance;
+
+    /// Histogram sink that records every sample into a shared `Vec`, so a test can assert
+    /// on exactly what `record()` emitted without installing a global metrics recorder.
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<f64>>);
+
+    impl HistogramFn for RecordingSink {
+        fn record(&self, value: f64) {
+            self.0.lock().unwrap().push(value);
+        }
+    }
+
+    fn make(expected: Duration) -> (TimingDeviationMetric, Arc<RecordingSink>) {
+        let sink = Arc::new(RecordingSink::default());
+        let hist = Histogram::from_arc(sink.clone());
+        (TimingDeviationMetric::new(hist, expected), sink)
+    }
+
+    fn samples(sink: &Arc<RecordingSink>) -> Vec<f64> {
+        sink.0.lock().unwrap().clone()
+    }
+
+    const EXPECTED: Duration = Duration::from_millis(20);
+    const EPS: f64 = 1e-9;
+
+    #[tokio::test(start_paused = true)]
+    async fn first_tick_only_arms_the_clock() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        assert!(samples(&sink).is_empty(), "first tick must record nothing");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn on_time_tick_is_near_zero() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        advance(EXPECTED).await; // exactly on schedule
+        m.record();
+        let s = samples(&sink);
+        assert_eq!(s.len(), 1);
+        assert!(s[0].abs() < EPS, "expected ~0, got {}", s[0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn late_tick_is_positive() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        advance(Duration::from_millis(25)).await; // 5ms late
+        m.record();
+        assert!(
+            (samples(&sink)[0] - 0.005).abs() < EPS,
+            "got {}",
+            samples(&sink)[0]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn early_tick_is_negative() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        advance(Duration::from_millis(12)).await; // 8ms early
+        m.record();
+        assert!(
+            (samples(&sink)[0] + 0.008).abs() < EPS,
+            "got {}",
+            samples(&sink)[0]
+        );
+    }
+
+    /// The behavior the doc comment promises: a stall surfaces as one large sample, and the
+    /// following on-time tick is small — gaps are measured back-to-back, not smeared together.
+    #[tokio::test(start_paused = true)]
+    async fn stall_is_a_single_large_sample() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        advance(Duration::from_millis(120)).await; // 100ms late
+        m.record();
+        advance(EXPECTED).await; // back on schedule
+        m.record();
+        let s = samples(&sink);
+        assert!((s[0] - 0.100).abs() < EPS, "stall sample: {}", s[0]);
+        assert!(s[1].abs() < EPS, "recovery sample: {}", s[1]);
+    }
+}
