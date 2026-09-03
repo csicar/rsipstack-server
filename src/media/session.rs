@@ -4,10 +4,11 @@ use std::time::Duration;
 
 use super::deadline::Deadline;
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
-use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer};
+use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer, EXPECTED_SEND_INTERVAL};
 use crate::codec::{create_codec, Codec};
 use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
+use crate::metrics;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -217,6 +218,8 @@ impl MediaSession {
     ) {
         let mut packet_count = 0u64;
         let mut rtp_state = RtpSendState::new(payload_type);
+        let mut rtp_send_timing_deviation_metric =
+            metrics::rtp_send_timing_deviation(EXPECTED_SEND_INTERVAL.duration());
 
         loop {
             tokio::select! {
@@ -247,6 +250,8 @@ impl MediaSession {
                             match socket.send(&packet).await {
                                 Ok(_) => {
                                     packet_count += 1;
+                                    rtp_send_timing_deviation_metric.record();
+                                    metrics::rtp_packets_sent().increment(1);
                                     if packet_count % 500 == 1 {
                                         debug!(
                                             count = packet_count,
@@ -258,6 +263,7 @@ impl MediaSession {
                                     }
                                 }
                                 Err(e) => {
+                                    metrics::rtp_send_errors().increment(1);
                                     error!("RTP send error: {}", e);
                                     break;
                                 }

@@ -8,10 +8,12 @@
 //! so the set of labels is defined exactly once: at the enum. Nothing here keeps a
 //! separate hand-written list of variants.
 
-use std::sync::Once;
+use std::{sync::Once, time::Duration};
 
+use metrics::Histogram;
 use rsipstack::dialog::dialog::TerminatedReason;
 use strum::{EnumIter, IntoEnumIterator, IntoStaticStr};
+use tokio::time::Instant;
 
 pub const CALLS_REJECTED_TOTAL: &str = "rsipstack_server.calls.rejected_total";
 pub const CALLS_ACCEPTED_TOTAL: &str = "rsipstack_server.calls.accepted_total";
@@ -22,6 +24,10 @@ pub const PORTS_CAPACITY: &str = "rsipstack_server.ports.capacity";
 pub const PORTS_ALLOCATION_ATTEMPTS: &str = "rsipstack_server.ports.allocation_attempts";
 pub const PORTS_ALLOCATION_FAILURES: &str = "rsipstack_server.ports.allocation_failures";
 pub const DRAIN_ACTIVE: &str = "rsipstack_server.drain_active";
+pub const RTP_PACKETS_SENT_TOTAL: &str = "rsipstack_server.rtp.packets_sent_total";
+pub const RTP_SEND_ERRORS_TOTAL: &str = "rsipstack_server.rtp.send_errors_total";
+pub const RTP_SEND_TIMING_DEVIATION_SECONDS: &str =
+    "rsipstack_server.rtp.send_timing_deviation_seconds";
 
 /// Label values for the `reason` label on [`CALLS_REJECTED_TOTAL`].
 #[derive(Debug, Clone, Copy, EnumIter, IntoStaticStr)]
@@ -147,6 +153,90 @@ pub fn drain_active() -> metrics::Gauge {
     )
 }
 
+pub fn rtp_packets_sent() -> metrics::Counter {
+    metrics::counter!(
+        description: "Number of RTP packets successfully sent",
+        RTP_PACKETS_SENT_TOTAL
+    )
+}
+
+pub fn rtp_send_errors() -> metrics::Counter {
+    metrics::counter!(
+        description: "Number of RTP packet send failures",
+        RTP_SEND_ERRORS_TOTAL
+    )
+}
+
+/// Records how far the real interval between two events drifts from an expected
+/// fixed cadence.
+///
+/// Each [`record`](Self::record) call measures the time since the previous call and
+/// emits `elapsed - expected_interval` (in seconds) to the wrapped histogram: zero
+/// means the event landed exactly on schedule, a positive sample means it was late,
+/// and a negative sample means it fired early. The very first call has no predecessor
+/// to compare against, so it only arms the clock and records nothing.
+///
+/// This is stateful — it owns the `last_tick` timestamp — so a single instance must be
+/// kept for the lifetime of the thing being measured and its `record` calls must all
+/// come from the same source of ticks. For RTP sends this means one instance per send
+/// task, ticked once per successful packet; see [`rtp_send_timing_deviation`].
+pub struct TimingDeviationMetric {
+    /// The cadence the events are supposed to keep; every sample is measured relative to it.
+    expected_interval: Duration,
+    /// Timestamp of the previous [`record`](Self::record) call, or `None` before the first tick.
+    last_tick: Option<Instant>,
+    /// Histogram the per-tick deviation (in seconds) is written to.
+    metric: Histogram,
+}
+
+impl TimingDeviationMetric {
+    /// Creates a metric that reports deviation from `expected_interval`, writing samples
+    /// into `metric`.
+    ///
+    /// Pass a [`Histogram`] obtained from your own `metrics::histogram!` call (whose unit
+    /// should be seconds, since that is what [`record`](Self::record) emits). Within this
+    /// crate, [`rtp_send_timing_deviation`] wires up the right histogram and interval for
+    /// RTP sends; external callers construct instances through this constructor directly.
+    pub fn new(metric: Histogram, expected_interval: Duration) -> Self {
+        Self {
+            expected_interval,
+            metric,
+            last_tick: None,
+        }
+    }
+
+    /// Records one tick.
+    ///
+    /// If a previous tick exists, emits `elapsed_since_previous - expected_interval`
+    /// (seconds) to the histogram; the first call after construction only stores the
+    /// current time and records nothing. Either way the internal clock advances to now,
+    /// so consecutive samples measure back-to-back gaps and a stall surfaces as a single
+    /// large sample rather than being smeared across several.
+    pub fn record(&mut self) {
+        let now = Instant::now();
+        if let Some(prev) = self.last_tick {
+            let elapsed_time = now - prev;
+            let deviation = elapsed_time.as_secs_f64() - self.expected_interval.as_secs_f64();
+            self.metric.record(deviation);
+        }
+        self.last_tick = Some(now);
+    }
+}
+
+/// Deviation of the time since the previous successful send from the expected
+/// 20ms (`a=ptime:20`) send interval. Recorded regardless of magnitude, so a
+/// stall shows up as a single large sample rather than being hidden by any
+/// catch-up behavior.
+pub fn rtp_send_timing_deviation(expected_interval: Duration) -> TimingDeviationMetric {
+    let metric = metrics::histogram!(
+        unit: metrics::Unit::Seconds,
+        description: "Deviation from the expected 20ms interval between RTP packet sends",
+        RTP_SEND_TIMING_DEVIATION_SECONDS
+    );
+
+    TimingDeviationMetric::new(metric, expected_interval)
+}
+
 /// Pre-registers metrics with a value of zero so they appear in scrapes before the
 /// events they track have ever occurred. Called by `SipServer::new`; a metrics
 /// recorder must be installed before that point for these values to be recorded.
@@ -171,6 +261,8 @@ pub fn ensure_initialized() {
             calls_terminated(label).absolute(0);
         }
         ports_allocation_failures().absolute(0);
+        rtp_packets_sent().absolute(0);
+        rtp_send_errors().absolute(0);
     });
 }
 
@@ -188,5 +280,96 @@ impl ScopedGauge {
 impl Drop for ScopedGauge {
     fn drop(&mut self) {
         self.gauge.decrement(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use metrics::HistogramFn;
+    use std::sync::{Arc, Mutex};
+    use tokio::time::advance;
+
+    /// Histogram sink that records every sample into a shared `Vec`, so a test can assert
+    /// on exactly what `record()` emitted without installing a global metrics recorder.
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<f64>>);
+
+    impl HistogramFn for RecordingSink {
+        fn record(&self, value: f64) {
+            self.0.lock().unwrap().push(value);
+        }
+    }
+
+    fn make(expected: Duration) -> (TimingDeviationMetric, Arc<RecordingSink>) {
+        let sink = Arc::new(RecordingSink::default());
+        let hist = Histogram::from_arc(sink.clone());
+        (TimingDeviationMetric::new(hist, expected), sink)
+    }
+
+    fn samples(sink: &Arc<RecordingSink>) -> Vec<f64> {
+        sink.0.lock().unwrap().clone()
+    }
+
+    const EXPECTED: Duration = Duration::from_millis(20);
+    const EPS: f64 = 1e-9;
+
+    #[tokio::test(start_paused = true)]
+    async fn first_tick_only_arms_the_clock() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        assert!(samples(&sink).is_empty(), "first tick must record nothing");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn on_time_tick_is_near_zero() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        advance(EXPECTED).await; // exactly on schedule
+        m.record();
+        let s = samples(&sink);
+        assert_eq!(s.len(), 1);
+        assert!(s[0].abs() < EPS, "expected ~0, got {}", s[0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn late_tick_is_positive() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        advance(Duration::from_millis(25)).await; // 5ms late
+        m.record();
+        assert!(
+            (samples(&sink)[0] - 0.005).abs() < EPS,
+            "got {}",
+            samples(&sink)[0]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn early_tick_is_negative() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        advance(Duration::from_millis(12)).await; // 8ms early
+        m.record();
+        assert!(
+            (samples(&sink)[0] + 0.008).abs() < EPS,
+            "got {}",
+            samples(&sink)[0]
+        );
+    }
+
+    /// The behavior the doc comment promises: a stall surfaces as one large sample, and the
+    /// following on-time tick is small — gaps are measured back-to-back, not smeared together.
+    #[tokio::test(start_paused = true)]
+    async fn stall_is_a_single_large_sample() {
+        let (mut m, sink) = make(EXPECTED);
+        m.record();
+        advance(Duration::from_millis(120)).await; // 100ms late
+        m.record();
+        advance(EXPECTED).await; // back on schedule
+        m.record();
+        let s = samples(&sink);
+        assert!((s[0] - 0.100).abs() < EPS, "stall sample: {}", s[0]);
+        assert!(s[1].abs() < EPS, "recovery sample: {}", s[1]);
     }
 }
