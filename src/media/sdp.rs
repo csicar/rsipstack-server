@@ -1,6 +1,7 @@
 //! SDP parsing and generation
 
 use std::net::IpAddr;
+use std::time::Duration;
 
 /// Information about a single codec from SDP
 #[derive(Debug, Clone)]
@@ -8,6 +9,25 @@ pub struct CodecInfo {
     pub payload_type: u8,
     pub codec_name: String,
 }
+
+/// The `a=ptime` this SIP server advertises, and the RTP send cadence it
+/// actually uses — the two must match, so this is their single source of
+/// truth rather than a value hardcoded separately in each place. Public so
+/// sip-bridge's `PacedWriter`, which targets the same 20ms period, can read
+/// this value instead of keeping its own copy in sync by hand. The inner
+/// field stays private so callers can only read the canonical value below,
+/// not construct their own.
+#[derive(Debug, Clone, Copy)]
+pub struct ExpectedSendInterval(Duration);
+
+impl ExpectedSendInterval {
+    pub fn duration(&self) -> Duration {
+        self.0
+    }
+}
+
+pub const EXPECTED_SEND_INTERVAL: ExpectedSendInterval =
+    ExpectedSendInterval(Duration::from_millis(20));
 
 #[derive(Debug, Clone, Copy)]
 pub struct PeerPort(pub u16);
@@ -181,9 +201,15 @@ pub fn generate_sdp_answer(
          c=IN IP4 {}\r\n\
          t=0 0\r\n\
          m=audio {} RTP/AVP {}\r\n\
-         {}a=ptime:20\r\n\
+         {}a=ptime:{}\r\n\
          a=sendrecv\r\n",
-        session_id, advertise_ip_addr.0, advertise_ip_addr.0, rtp_port, pt_list, rtpmap_lines
+        session_id,
+        advertise_ip_addr.0,
+        advertise_ip_addr.0,
+        rtp_port,
+        pt_list,
+        rtpmap_lines,
+        EXPECTED_SEND_INTERVAL.duration().as_millis()
     )
 }
 

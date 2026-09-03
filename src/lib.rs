@@ -57,8 +57,7 @@ mod server;
 // Re-export public API
 pub use audio::handler::{AudioHandler, SipHeaders};
 pub use media::rtp::AudioFrame;
-pub use media::sdp::AdvertiseIpAddr;
-pub use media::session::{ExpectedSendInterval, EXPECTED_SEND_INTERVAL};
+pub use media::sdp::{AdvertiseIpAddr, ExpectedSendInterval, EXPECTED_SEND_INTERVAL};
 pub use server::{ServerConfig, ServerState, SipServer};
 
 // Re-export useful types from dependencies

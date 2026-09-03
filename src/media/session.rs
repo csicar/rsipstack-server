@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::deadline::Deadline;
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
-use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer};
+use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer, EXPECTED_SEND_INTERVAL};
 use crate::codec::{create_codec, Codec};
 use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
@@ -14,23 +14,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
-
-/// The `a=ptime:20` this SIP server advertises (see `sdp.rs`). Public so
-/// sip-bridge's `PacedWriter`, which targets the same 20ms period, can read
-/// this value instead of keeping its own copy in sync by hand. The inner
-/// field stays private so callers can only read the canonical value below,
-/// not construct their own.
-#[derive(Debug, Clone, Copy)]
-pub struct ExpectedSendInterval(Duration);
-
-impl ExpectedSendInterval {
-    pub fn get(&self) -> Duration {
-        self.0
-    }
-}
-
-pub const EXPECTED_SEND_INTERVAL: ExpectedSendInterval =
-    ExpectedSendInterval(Duration::from_millis(20));
 
 /// Media session for handling RTP audio
 pub struct MediaSession {
@@ -270,7 +253,7 @@ impl MediaSession {
                                     let now = Instant::now();
                                     if let Some(prev) = previous_instant {
                                         let elapsed_time = now - prev;
-                                        let deviation = elapsed_time.as_secs_f64() - EXPECTED_SEND_INTERVAL.0.as_secs_f64();
+                                        let deviation = elapsed_time.as_secs_f64() - EXPECTED_SEND_INTERVAL.duration().as_secs_f64();
                                         crate::metrics::rtp_send_timing_deviation().record(deviation);
                                     }
                                     previous_instant = Some(now);
