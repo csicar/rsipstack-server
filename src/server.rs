@@ -421,7 +421,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
                     };
 
                     match dialog {
-                        Dialog::ServerInvite(server_dialog) => {
+                        Dialog::Invite(server_dialog) => {
                             let state = server_state.clone();
                             let factory = handler_factory.clone();
                             tokio::spawn(async move {
