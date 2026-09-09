@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "echo_server"
 path = "examples/echo_server.rs"
 
+[[bench]]
+name = "rtp_codec"
+harness = false
+
 [features]
 default = ["opus"]
 opus = ["dep:opus"]
@@ -36,3 +40,4 @@ strum = { version = "0.28.0", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["test-util"] }
+criterion = "0.5"

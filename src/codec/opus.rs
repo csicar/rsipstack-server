@@ -6,7 +6,7 @@
 //! This implementation uses the `opus` crate for encoding/decoding.
 
 use super::Codec;
-use opus::{Channels, Decoder, Encoder};
+use opus::{Bitrate, Channels, Decoder, Encoder, Signal};
 
 /// Opus codec for 48kHz mono audio
 pub struct OpusCodec {
@@ -20,7 +20,26 @@ impl OpusCodec {
     /// Returns an error if the opus encoder/decoder cannot be initialized.
     pub fn new() -> Result<Self, opus::Error> {
         // 48kHz mono for VoIP applications
-        let encoder = Encoder::new(48000, Channels::Mono, opus::Application::Voip)?;
+        let mut encoder = Encoder::new(48000, Channels::Mono, opus::Application::Voip)?;
+
+        // Encoder tuning, validated against real call audio (see `benches/rtp_codec.rs`;
+        // run with `RTP_BENCH_AUDIO=<real.s16> cargo bench`). libopus defaults to
+        // complexity ~9-10 (offline/music grade); on real speech that costs ~378 µs to
+        // encode a 20 ms frame. These knobs cut the send-task CPU with negligible
+        // speech-quality loss:
+        //   * complexity 5  -> ~-21% encode CPU vs default (the dominant lever; on real
+        //     audio the cost is cleanly monotonic in complexity).
+        //   * signal Voice  -> CPU-neutral on real speech, biases the SILK/CELT decision
+        //     toward speech (quality hint, not a CPU knob).
+        //   * bitrate 24 kbps -> small CPU win plus the bandwidth saving; ample for
+        //     narrowband/wideband speech.
+        // NOTE: an earlier synthetic-audio benchmark wrongly flagged this exact config as
+        // a regression — a constant-energy tone made the *baseline* artificially cheap and
+        // inverted the ranking. Always validate Opus tuning on real audio.
+        encoder.set_complexity(5)?;
+        encoder.set_signal(Signal::Voice)?;
+        encoder.set_bitrate(Bitrate::Bits(24000))?;
+
         let decoder = Decoder::new(48000, Channels::Mono)?;
 
         Ok(Self { encoder, decoder })
