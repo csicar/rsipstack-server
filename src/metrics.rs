@@ -10,7 +10,7 @@
 
 use std::{sync::Once, time::Duration};
 
-use metrics::{Gauge, Histogram};
+use metrics::Histogram;
 use rsipstack::dialog::dialog::TerminatedReason;
 use strum::{EnumIter, IntoEnumIterator, IntoStaticStr};
 use tokio::time::Instant;
@@ -28,8 +28,8 @@ pub const RTP_PACKETS_SENT_TOTAL: &str = "rsipstack_server.rtp.packets_sent_tota
 pub const RTP_SEND_ERRORS_TOTAL: &str = "rsipstack_server.rtp.send_errors_total";
 pub const RTP_SEND_TIMING_DEVIATION_SECONDS: &str =
     "rsipstack_server.rtp.send_timing_deviation_seconds";
-pub const RTP_SEND_TIMING_MAX_DEVIATION_SECONDS: &str =
-    "rsipstack_server.rtp.send_timing_max_deviation_seconds";
+pub const RTP_SEND_TIMING_DEVIATION_SUMMARY_SECONDS: &str =
+    "rsipstack_server.rtp.send_timing_deviation_summary_seconds";
 
 /// Label values for the `reason` label on [`CALLS_REJECTED_TOTAL`].
 #[derive(Debug, Clone, Copy, EnumIter, IntoStaticStr)]
@@ -173,90 +173,80 @@ pub fn rtp_send_errors() -> metrics::Counter {
 /// fixed cadence.
 ///
 /// Each [`record`](Self::record) call measures the time since the previous call and
-/// emits `elapsed - expected_interval` (in seconds) to the wrapped histogram: zero
+/// emits `elapsed - expected_interval` (in seconds) to both wrapped histograms: zero
 /// means the event landed exactly on schedule, a positive sample means it was late,
 /// and a negative sample means it fired early. The very first call has no predecessor
 /// to compare against, so it only arms the clock and records nothing.
 ///
-/// It also tracks the largest lateness seen since construction and publishes it to a
-/// separate gauge, updated only when a new sample exceeds the running maximum. This
-/// exists because the histogram alone can't answer "what's the worst it's ever been":
-/// Prometheus buckets quantize the value, and anything beyond the top bucket collapses
-/// into the same `+Inf` bucket regardless of how far past it the real value was. The
-/// gauge instead holds the exact worst-case value, unbounded.
+/// It writes the same sample to two histograms because they exist to answer different
+/// questions, and a Prometheus histogram can't answer both from one metric:
 ///
-/// The running maximum starts at, and is floored at, zero: an on-time or early tick
-/// (deviation `<= 0`) is never a problem, so it never counts as a "worst case" and never
-/// pulls the gauge down once a real lateness has been observed. Unlike the histogram —
-/// which has no meaningful zero to pre-register and so isn't touched until the first
-/// sample — the gauge is given this defined starting value immediately on construction,
-/// matching how every other gauge in this module is always set to a real value by the
-/// code that owns its lifecycle.
+/// - `metric` is a real (bucketed) histogram, giving the overall distribution shape -
+///   good for a heatmap panel, but any answer derived from it (like a worst-case value)
+///   is quantized to bucket boundaries, and anything past the top bucket collapses into
+///   the same `+Inf` bucket regardless of how far past it the real value was.
+/// - `summary` is registered the exact same way, but is meant to be left unconfigured
+///   (no explicit buckets) in the exporter, which then represents it as a Prometheus
+///   *summary* instead of a histogram - computing real quantiles from actual recorded
+///   values over a rolling time window, no bucketing involved. Its `quantile="1"` is the
+///   exact max seen anywhere in that window, decaying automatically as the window slides,
+///   which is what makes it safe to share across every concurrent instance recording
+///   into it (e.g. one per RTP call): nothing here does a hand-rolled process-wide
+///   "running max" that would need its own concurrency-safe reset/decay logic, since the
+///   exporter already does that job. Whether a metric name renders as a histogram or a
+///   summary is chosen entirely by the exporter's setup, not by anything in this crate;
+///   see [`rtp_send_timing_deviation`]'s doc comment for how the RTP instance is wired.
 ///
-/// This is stateful — it owns the `last_tick` timestamp and running maximum — so a
-/// single instance must be kept for the lifetime of the thing being measured and its
-/// `record` calls must all come from the same source of ticks. For RTP sends this
-/// means one instance per send task, ticked once per successful packet; see
-/// [`rtp_send_timing_deviation`].
+/// This is stateful - it owns the `last_tick` timestamp - so a single instance must be
+/// kept for the lifetime of the thing being measured and its `record` calls must all
+/// come from the same source of ticks. For RTP sends this means one instance per send
+/// task, ticked once per successful packet; see [`rtp_send_timing_deviation`].
 pub struct TimingDeviationMetric {
     /// The cadence the events are supposed to keep; every sample is measured relative to it.
     expected_interval: Duration,
     /// Timestamp of the previous [`record`](Self::record) call, or `None` before the first tick.
     last_tick: Option<Instant>,
-    /// Histogram the per-tick deviation (in seconds) is written to.
+    /// Bucketed histogram the per-tick deviation (in seconds) is written to.
     metric: Histogram,
-    /// Largest deviation recorded so far; floored at `0.0`, which also seeds it before
-    /// the first sample.
-    max_deviation: f64,
-    /// Gauge `max_deviation` is published to.
-    max_gauge: Gauge,
+    /// A second histogram fed the same samples, meant to be left without explicit
+    /// exporter-configured buckets so it renders as a Prometheus summary instead.
+    summary: Histogram,
 }
 
 impl TimingDeviationMetric {
-    /// Creates a metric that reports deviation from `expected_interval`, writing per-tick
-    /// samples into `metric` and the running worst-case sample into `max_gauge`.
+    /// Creates a metric that reports deviation from `expected_interval`, writing every
+    /// tick's sample into both `metric` and `summary`.
     ///
-    /// `max_gauge` is set to `0.0` immediately, before any tick is recorded — see the
-    /// struct docs for why zero is the right floor and starting value.
-    ///
-    /// Pass a [`Histogram`] and a [`Gauge`] obtained from your own `metrics::histogram!`
-    /// and `metrics::gauge!` calls (both should use a seconds unit, since that is what
-    /// [`record`](Self::record) emits). Within this crate, [`rtp_send_timing_deviation`]
-    /// wires up the right histogram, gauge, and interval for RTP sends; external callers
-    /// construct instances through this constructor directly.
-    pub fn new(metric: Histogram, max_gauge: Gauge, expected_interval: Duration) -> Self {
-        max_gauge.set(0.0);
+    /// Pass two [`Histogram`]s obtained from your own `metrics::histogram!` calls, under
+    /// two different metric names (both should use a seconds unit, since that is what
+    /// [`record`](Self::record) emits) - `summary` is expected to be left unconfigured in
+    /// your `PrometheusBuilder` setup so the exporter falls back to rendering it as a
+    /// summary; see the struct docs for why. Within this crate, [`rtp_send_timing_deviation`]
+    /// wires up the right histograms and interval for RTP sends; external callers construct
+    /// instances through this constructor directly.
+    pub fn new(metric: Histogram, summary: Histogram, expected_interval: Duration) -> Self {
         Self {
             expected_interval,
             metric,
-            max_gauge,
+            summary,
             last_tick: None,
-            max_deviation: 0.0,
         }
     }
 
     /// Records one tick.
     ///
     /// If a previous tick exists, emits `elapsed_since_previous - expected_interval`
-    /// (seconds) to the histogram; the first call after construction only stores the
+    /// (seconds) to both histograms; the first call after construction only stores the
     /// current time and records nothing. Either way the internal clock advances to now,
     /// so consecutive samples measure back-to-back gaps and a stall surfaces as a single
     /// large sample rather than being smeared across several.
-    ///
-    /// Whenever a sample is recorded, it is also compared against the running maximum
-    /// (floored at zero); if it's a new high, `max_gauge` is updated to match. An
-    /// on-time or early tick is `<= 0` and so never raises or lowers it.
     pub fn record(&mut self) {
         let now = Instant::now();
         if let Some(prev) = self.last_tick {
             let elapsed_time = now - prev;
             let deviation = elapsed_time.as_secs_f64() - self.expected_interval.as_secs_f64();
             self.metric.record(deviation);
-
-            if deviation > self.max_deviation {
-                self.max_deviation = deviation;
-                self.max_gauge.set(deviation);
-            }
+            self.summary.record(deviation);
         }
         self.last_tick = Some(now);
     }
@@ -266,19 +256,27 @@ impl TimingDeviationMetric {
 /// 20ms (`a=ptime:20`) send interval. Recorded regardless of magnitude, so a
 /// stall shows up as a single large sample rather than being hidden by any
 /// catch-up behavior.
+///
+/// Wires up two histograms sharing every sample - see [`TimingDeviationMetric`]'s doc
+/// comment for why. [`RTP_SEND_TIMING_DEVIATION_SECONDS`] is meant to keep its explicit
+/// exporter-side bucket configuration (for a heatmap of the full distribution);
+/// [`RTP_SEND_TIMING_DEVIATION_SUMMARY_SECONDS`] must be left *without* one, so the
+/// exporter's default quantile summary applies to it instead - its `quantile="1"` is
+/// then the exact max deviation over the exporter's rolling window (tune the window via
+/// the exporter's summary bucket count/duration options, if the default doesn't fit).
 pub fn rtp_send_timing_deviation(expected_interval: Duration) -> TimingDeviationMetric {
     let metric = metrics::histogram!(
         unit: metrics::Unit::Seconds,
         description: "Deviation from the expected 20ms interval between RTP packet sends",
         RTP_SEND_TIMING_DEVIATION_SECONDS
     );
-    let max_gauge = metrics::gauge!(
+    let summary = metrics::histogram!(
         unit: metrics::Unit::Seconds,
-        description: "Largest deviation observed so far from the expected 20ms interval between RTP packet sends",
-        RTP_SEND_TIMING_MAX_DEVIATION_SECONDS
+        description: "Deviation from the expected 20ms interval between RTP packet sends, as exporter-computed quantiles (including exact max) over a rolling window - see the doc comment on `rtp_send_timing_deviation`",
+        RTP_SEND_TIMING_DEVIATION_SUMMARY_SECONDS
     );
 
-    TimingDeviationMetric::new(metric, max_gauge, expected_interval)
+    TimingDeviationMetric::new(metric, summary, expected_interval)
 }
 
 /// Pre-registers metrics with a value of zero so they appear in scrapes before the
@@ -330,7 +328,7 @@ impl Drop for ScopedGauge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use metrics::{GaugeFn, HistogramFn};
+    use metrics::HistogramFn;
     use std::sync::{Arc, Mutex};
     use tokio::time::advance;
 
@@ -345,34 +343,17 @@ mod tests {
         }
     }
 
-    /// Gauge sink that records only the latest `set()` value, so a test can assert on the
-    /// running maximum `record()` publishes without installing a global metrics recorder.
-    #[derive(Default)]
-    struct GaugeSink(Mutex<Option<f64>>);
-
-    impl GaugeFn for GaugeSink {
-        fn increment(&self, _value: f64) {
-            unimplemented!("TimingDeviationMetric only calls set()")
-        }
-        fn decrement(&self, _value: f64) {
-            unimplemented!("TimingDeviationMetric only calls set()")
-        }
-        fn set(&self, value: f64) {
-            *self.0.lock().unwrap() = Some(value);
-        }
-    }
-
     fn make(
         expected: Duration,
-    ) -> (TimingDeviationMetric, Arc<RecordingSink>, Arc<GaugeSink>) {
+    ) -> (TimingDeviationMetric, Arc<RecordingSink>, Arc<RecordingSink>) {
         let sink = Arc::new(RecordingSink::default());
         let hist = Histogram::from_arc(sink.clone());
-        let gauge_sink = Arc::new(GaugeSink::default());
-        let gauge = Gauge::from_arc(gauge_sink.clone());
+        let summary_sink = Arc::new(RecordingSink::default());
+        let summary = Histogram::from_arc(summary_sink.clone());
         (
-            TimingDeviationMetric::new(hist, gauge, expected),
+            TimingDeviationMetric::new(hist, summary, expected),
             sink,
-            gauge_sink,
+            summary_sink,
         )
     }
 
@@ -380,36 +361,32 @@ mod tests {
         sink.0.lock().unwrap().clone()
     }
 
-    fn max(sink: &Arc<GaugeSink>) -> Option<f64> {
-        *sink.0.lock().unwrap()
-    }
-
     const EXPECTED: Duration = Duration::from_millis(20);
     const EPS: f64 = 1e-9;
 
     #[tokio::test(start_paused = true)]
     async fn first_tick_only_arms_the_clock() {
-        let (mut m, sink, gauge) = make(EXPECTED);
+        let (mut m, sink, summary) = make(EXPECTED);
         m.record();
         assert!(samples(&sink).is_empty(), "first tick must record nothing");
-        assert_eq!(max(&gauge), Some(0.0), "max starts at zero, set on construction");
+        assert!(samples(&summary).is_empty());
     }
 
     #[tokio::test(start_paused = true)]
     async fn on_time_tick_is_near_zero() {
-        let (mut m, sink, gauge) = make(EXPECTED);
+        let (mut m, sink, summary) = make(EXPECTED);
         m.record();
         advance(EXPECTED).await; // exactly on schedule
         m.record();
         let s = samples(&sink);
         assert_eq!(s.len(), 1);
         assert!(s[0].abs() < EPS, "expected ~0, got {}", s[0]);
-        assert!(max(&gauge).unwrap().abs() < EPS, "max should track the lone ~0 sample");
+        assert_eq!(samples(&summary), s, "summary must mirror the same sample");
     }
 
     #[tokio::test(start_paused = true)]
     async fn late_tick_is_positive() {
-        let (mut m, sink, gauge) = make(EXPECTED);
+        let (mut m, sink, summary) = make(EXPECTED);
         m.record();
         advance(Duration::from_millis(25)).await; // 5ms late
         m.record();
@@ -418,12 +395,12 @@ mod tests {
             "got {}",
             samples(&sink)[0]
         );
-        assert!((max(&gauge).unwrap() - 0.005).abs() < EPS);
+        assert_eq!(samples(&summary), samples(&sink));
     }
 
     #[tokio::test(start_paused = true)]
     async fn early_tick_is_negative() {
-        let (mut m, sink, gauge) = make(EXPECTED);
+        let (mut m, sink, summary) = make(EXPECTED);
         m.record();
         advance(Duration::from_millis(12)).await; // 8ms early
         m.record();
@@ -432,15 +409,14 @@ mod tests {
             "got {}",
             samples(&sink)[0]
         );
-        // An early tick is <= 0 and so never lifts the max above its zero floor.
-        assert_eq!(max(&gauge), Some(0.0));
+        assert_eq!(samples(&summary), samples(&sink));
     }
 
     /// The behavior the doc comment promises: a stall surfaces as one large sample, and the
     /// following on-time tick is small — gaps are measured back-to-back, not smeared together.
     #[tokio::test(start_paused = true)]
     async fn stall_is_a_single_large_sample() {
-        let (mut m, sink, gauge) = make(EXPECTED);
+        let (mut m, sink, summary) = make(EXPECTED);
         m.record();
         advance(Duration::from_millis(120)).await; // 100ms late
         m.record();
@@ -449,27 +425,10 @@ mod tests {
         let s = samples(&sink);
         assert!((s[0] - 0.100).abs() < EPS, "stall sample: {}", s[0]);
         assert!(s[1].abs() < EPS, "recovery sample: {}", s[1]);
-        assert!(
-            (max(&gauge).unwrap() - 0.100).abs() < EPS,
-            "max must stay at the stall's size, not drop back down on recovery"
-        );
-    }
-
-    /// The running max is monotonic: a later sample that's smaller (or negative) than a
-    /// previously recorded worst case must not pull the published gauge back down.
-    #[tokio::test(start_paused = true)]
-    async fn max_does_not_decrease_on_a_smaller_or_early_sample() {
-        let (mut m, _sink, gauge) = make(EXPECTED);
-        m.record();
-        advance(Duration::from_millis(25)).await; // 5ms late
-        m.record();
-        assert!((max(&gauge).unwrap() - 0.005).abs() < EPS);
-
-        advance(Duration::from_millis(12)).await; // 8ms early
-        m.record();
-        assert!(
-            (max(&gauge).unwrap() - 0.005).abs() < EPS,
-            "an early tick must not lower the published max"
+        assert_eq!(
+            samples(&summary),
+            s,
+            "summary receives every sample the bucketed histogram does, including the stall"
         );
     }
 }
