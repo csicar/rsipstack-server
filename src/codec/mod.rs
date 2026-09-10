@@ -9,11 +9,17 @@ mod pcmu;
 #[cfg(feature = "opus")]
 mod opus;
 
+#[cfg(feature = "g722")]
+mod g722;
+
 pub use pcma::PcmaCodec;
 pub use pcmu::PcmuCodec;
 
 #[cfg(feature = "opus")]
 pub use self::opus::OpusCodec;
+
+#[cfg(feature = "g722")]
+pub use self::g722::G722Codec;
 
 /// Trait for audio codecs that encode/decode RTP payloads
 ///
@@ -38,11 +44,14 @@ pub trait Codec: Send {
 /// # Supported Payload Types
 /// - 0: PCMU (G.711 μ-law)
 /// - 8: PCMA (G.711 A-law)
+/// - 9: G.722 (when "g722" feature is enabled)
 /// - Dynamic types for Opus (when "opus" feature is enabled)
 pub fn create_codec(payload_type: u8, codec_name: Option<&str>) -> Option<Box<dyn Codec>> {
     match payload_type {
         0 => Some(Box::new(PcmuCodec::new())),
         8 => Some(Box::new(PcmaCodec::new())),
+        #[cfg(feature = "g722")]
+        9 => Some(Box::new(G722Codec::new())),
         _ => {
             // For dynamic payload types, check codec name
             #[cfg(feature = "opus")]
@@ -79,5 +88,14 @@ mod tests {
     fn test_create_unknown_codec() {
         let codec = create_codec(99, None);
         assert!(codec.is_none());
+    }
+
+    #[cfg(feature = "g722")]
+    #[test]
+    fn test_create_g722_codec() {
+        // G.722 uses the static payload type 9.
+        let codec = create_codec(9, Some("G722"));
+        assert!(codec.is_some());
+        assert_eq!(codec.unwrap().samples_per_frame(), 960);
     }
 }
