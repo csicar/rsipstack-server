@@ -54,7 +54,16 @@ pub struct SdpOffer {
 }
 
 /// Codecs we support, in preference order
-const SUPPORTED_CODECS: &[&str] = &["opus", "PCMU", "PCMA"];
+///
+/// G.722 is only advertised when the `g722` feature is enabled; otherwise it is
+/// omitted so the negotiator never selects a codec `create_codec` cannot build.
+const SUPPORTED_CODECS: &[&str] = &[
+    "opus",
+    #[cfg(feature = "g722")]
+    "G722",
+    "PCMU",
+    "PCMA",
+];
 
 /// Check if we support a codec by name (case-insensitive)
 fn is_supported_codec(name: &str) -> bool {
@@ -101,6 +110,8 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
         let codec_name = match pt {
             0 => "PCMU".to_string(),
             8 => "PCMA".to_string(),
+            // G.722 is a static payload type; name it even without an rtpmap line.
+            9 => "G722".to_string(),
             _ => {
                 // Try to find rtpmap attribute for this payload type
                 let mut found_codec = None;
@@ -189,6 +200,8 @@ pub fn generate_sdp_answer(
             ),
             "pcmu" => format!("a=rtpmap:{} PCMU/8000\r\n", codec.payload_type),
             "pcma" => format!("a=rtpmap:{} PCMA/8000\r\n", codec.payload_type),
+            // G.722 carries 16kHz audio but by convention advertises 8000.
+            "g722" => format!("a=rtpmap:{} G722/8000\r\n", codec.payload_type),
             _ => continue,
         };
         rtpmap_lines.push_str(&rtpmap);
@@ -430,5 +443,51 @@ mod tests {
         assert_eq!(offer.codecs[2].codec_name, "PCMA");
         assert_eq!(offer.codecs[3].payload_type, 0);
         assert_eq!(offer.codecs[3].codec_name, "PCMU");
+    }
+
+    #[cfg(feature = "g722")]
+    #[test]
+    fn test_g722_selected_when_offered() {
+        // G.722 (static PT 9) is offered ahead of PCMU. G.722 wins only if it
+        // is genuinely in our supported list; otherwise the selector would skip
+        // it and pick PCMU. This distinguishes real support from the
+        // "only codec offered" fallback path.
+        let sdp = "v=0\n\
+                   o=- 1 1 IN IP4 12.22.0.39\n\
+                   s=-\n\
+                   t=0 0\n\
+                   m=audio 5000 RTP/AVP 9 0\n\
+                   c=IN IP4 12.22.0.39\n\
+                   a=rtpmap:9 G722/8000\n\
+                   a=rtpmap:0 PCMU/8000\n";
+
+        let offer = parse_sdp_offer(sdp).unwrap();
+        assert_eq!(offer.payload_type, 9);
+        assert_eq!(offer.codec_name, "G722");
+    }
+
+    #[cfg(feature = "g722")]
+    #[test]
+    fn test_generate_answer_includes_g722() {
+        let offered = vec![CodecInfo {
+            payload_type: 9,
+            codec_name: "G722".to_string(),
+        }];
+        let answer = generate_sdp_answer(
+            AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+            10000,
+            42,
+            &offered,
+        );
+        assert!(
+            answer.contains("a=rtpmap:9 G722/8000\r\n"),
+            "answer missing G722 rtpmap: {}",
+            answer
+        );
+        assert!(
+            answer.contains("RTP/AVP 9\r\n"),
+            "answer missing G722 payload type in m= line: {}",
+            answer
+        );
     }
 }

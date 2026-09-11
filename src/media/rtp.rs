@@ -67,12 +67,13 @@ impl RtpSendState {
 
 /// RTP timestamp advance per 20ms frame for a given payload type.
 ///
-/// Per RFC 3551, PCMU/PCMA use an 8kHz clock (160 per 20ms frame).
-/// Dynamic payload types are only ever negotiated for Opus today, which
-/// uses a 48kHz clock (960 per 20ms frame).
+/// Per RFC 3551, PCMU/PCMA use an 8kHz clock (160 per 20ms frame). G.722
+/// (static PT 9) also uses an 8kHz RTP clock by RFC 3551 §4.5.2 convention,
+/// even though it samples audio at 16kHz. Dynamic payload types are only ever
+/// negotiated for Opus today, which uses a 48kHz clock (960 per 20ms frame).
 pub fn rtp_timestamp_increment(payload_type: u8) -> u32 {
     match payload_type {
-        0 | 8 => 160,
+        0 | 8 | 9 => 160,
         _ => 960,
     }
 }
@@ -314,6 +315,13 @@ mod tests {
     #[test]
     fn test_rtp_timestamp_increment_pcma() {
         assert_eq!(rtp_timestamp_increment(8), 160);
+    }
+
+    #[test]
+    fn test_rtp_timestamp_increment_g722() {
+        // Per RFC 3551 §4.5.2, G.722 (static PT 9) uses an 8kHz RTP clock
+        // despite sampling audio at 16kHz, so a 20ms frame advances by 160.
+        assert_eq!(rtp_timestamp_increment(9), 160);
     }
 
     #[test]
