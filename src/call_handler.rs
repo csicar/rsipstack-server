@@ -117,7 +117,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
 
         info!(dialog_id = %dialog_id, "Call accepted, starting audio handler");
         let _active_calls_guard = ScopedGauge::new(metrics::calls_active());
-        metrics::calls_accepted().increment(1);
+        metrics::calls_accepted(metrics::codec_label(&offer.codec_name)).increment(1);
 
         // Start the media session and audio handler
         let (audio_in, audio_out) = media_session.start().await;
