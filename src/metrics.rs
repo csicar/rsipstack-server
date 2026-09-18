@@ -362,8 +362,6 @@ mod tests {
 
     #[test]
     fn codec_label_is_case_insensitive_and_canonicalized() {
-        assert_eq!(codec_label("opus"), "opus");
-        assert_eq!(codec_label("Opus"), "opus");
         assert_eq!(codec_label("PCMU"), "PCMU");
         assert_eq!(codec_label("pcmu"), "PCMU");
         assert_eq!(codec_label("pcma"), "PCMA");
@@ -374,6 +372,19 @@ mod tests {
         assert_eq!(codec_label("speex"), OTHER_CODEC_LABEL);
         assert_eq!(codec_label("PT101"), OTHER_CODEC_LABEL);
         assert_eq!(codec_label(""), OTHER_CODEC_LABEL);
+    }
+
+    #[test]
+    #[cfg(feature = "opus")]
+    fn codec_label_recognizes_opus_when_feature_enabled() {
+        assert_eq!(codec_label("opus"), "opus");
+        assert_eq!(codec_label("Opus"), "opus");
+    }
+
+    #[test]
+    #[cfg(not(feature = "opus"))]
+    fn codec_label_falls_back_to_other_for_opus_when_feature_disabled() {
+        assert_eq!(codec_label("opus"), OTHER_CODEC_LABEL);
     }
 
     #[test]

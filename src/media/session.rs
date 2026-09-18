@@ -380,6 +380,7 @@ mod tests {
         assert!(!sdp.contains("opus"));
     }
 
+    #[cfg(feature = "opus")]
     #[tokio::test]
     async fn test_media_session_sdp_multiple_codecs() {
         let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());

@@ -55,12 +55,14 @@ pub struct SdpOffer {
 
 /// Codecs we support, in preference order
 ///
-/// G.722 is only advertised when the `g722` feature is enabled; otherwise it is
-/// omitted so the negotiator never selects a codec `create_codec` cannot build.
+/// Opus and G.722 are only advertised when their respective `opus`/`g722` feature is
+/// enabled; otherwise they are omitted so the negotiator never selects a codec
+/// `create_codec` cannot build.
 ///
 /// This is `pub(crate)` so metrics can derive their codec label set from this single
 /// list (see [`canonical_codec_name`]) instead of keeping a hand-maintained copy in sync.
 pub(crate) const SUPPORTED_CODECS: &[&str] = &[
+    #[cfg(feature = "opus")]
     "opus",
     #[cfg(feature = "g722")]
     "G722",
@@ -293,6 +295,7 @@ mod tests {
         assert_eq!(offer.codecs[1].codec_name, "PCMA");
     }
 
+    #[cfg(feature = "opus")]
     #[test]
     fn test_generate_sdp_answer_all_codecs() {
         let ip: AdvertiseIpAddr = AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
@@ -358,6 +361,7 @@ mod tests {
         assert!(!sdp.contains("G729"));
     }
 
+    #[cfg(feature = "opus")]
     #[test]
     fn test_parse_sdp_offer_opus() {
         let sdp = "v=0\r\n\
@@ -396,6 +400,7 @@ mod tests {
         assert_eq!(offer.codec_name, "opus");
     }
 
+    #[cfg(feature = "opus")]
     #[test]
     fn test_parse_sdp_offer_opus_dynamic_pt() {
         // Test that Opus works with any dynamic payload type (96-127), not just 111
@@ -415,6 +420,7 @@ mod tests {
         assert_eq!(offer.codec_name, "opus");
     }
 
+    #[cfg(feature = "opus")]
     #[test]
     fn test_parse_sdp_offer_complex() {
         let sdp = "v=0\n\
