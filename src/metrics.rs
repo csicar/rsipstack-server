@@ -100,11 +100,39 @@ pub fn calls_accepted() -> metrics::Counter {
     )
 }
 
-pub fn calls_active() -> metrics::Gauge {
+/// Label values for the `codec` label on [`CALLS_ACTIVE`].
+#[derive(Debug, Clone, Copy, EnumIter, IntoStaticStr)]
+pub enum CodecLabel {
+    Opus,
+    Pcmu,
+    Pcma,
+    G722,
+    /// Catches the `sdp::negotiate_codec` fallback where none of the offered codecs are
+    /// supported and the first offered codec is used anyway (see that function's doc
+    /// comment) - its name is arbitrary, peer-controlled text, so it must never be used
+    /// as a label value directly. Mirrors the reasoning behind [`TerminatedLabel`] dropping
+    /// the `StatusCode` payload of its `ProxyError`/`UacOther`/`UasOther` variants.
+    Other,
+}
+
+impl From<&str> for CodecLabel {
+    fn from(codec_name: &str) -> Self {
+        match codec_name.to_ascii_lowercase().as_str() {
+            "opus" => Self::Opus,
+            "pcmu" => Self::Pcmu,
+            "pcma" => Self::Pcma,
+            "g722" => Self::G722,
+            _ => Self::Other,
+        }
+    }
+}
+
+pub fn calls_active(codec: CodecLabel) -> metrics::Gauge {
     metrics::gauge!(
         unit: metrics::Unit::Count,
         description: "Number of currently active SIP calls",
-        CALLS_ACTIVE
+        CALLS_ACTIVE,
+        "codec" => <&'static str>::from(codec)
     )
 }
 
@@ -297,7 +325,9 @@ pub fn ensure_initialized() {
             calls_rejected(reason).absolute(0);
         }
         calls_accepted().absolute(0);
-        calls_active().set(0);
+        for codec in CodecLabel::iter() {
+            calls_active(codec).set(0);
+        }
         calls_dialog_not_found().absolute(0);
         for label in TerminatedLabel::iter() {
             calls_terminated(label).absolute(0);
@@ -331,6 +361,23 @@ mod tests {
     use metrics::HistogramFn;
     use std::sync::{Arc, Mutex};
     use tokio::time::advance;
+
+    #[test]
+    fn codec_label_from_str_is_case_insensitive() {
+        assert!(matches!(CodecLabel::from("opus"), CodecLabel::Opus));
+        assert!(matches!(CodecLabel::from("Opus"), CodecLabel::Opus));
+        assert!(matches!(CodecLabel::from("PCMU"), CodecLabel::Pcmu));
+        assert!(matches!(CodecLabel::from("pcma"), CodecLabel::Pcma));
+        assert!(matches!(CodecLabel::from("G722"), CodecLabel::G722));
+        assert!(matches!(CodecLabel::from("g722"), CodecLabel::G722));
+    }
+
+    #[test]
+    fn codec_label_from_str_falls_back_to_other() {
+        assert!(matches!(CodecLabel::from("speex"), CodecLabel::Other));
+        assert!(matches!(CodecLabel::from("PT101"), CodecLabel::Other));
+        assert!(matches!(CodecLabel::from(""), CodecLabel::Other));
+    }
 
     /// Histogram sink that records every sample into a shared `Vec`, so a test can assert
     /// on exactly what `record()` emitted without installing a global metrics recorder.

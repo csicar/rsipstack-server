@@ -6,7 +6,7 @@ use crate::media::sdp::parse_sdp_offer;
 use crate::media::session::MediaSession;
 use crate::media::PeerSocketAddr;
 use crate::metrics;
-use crate::metrics::{RejectReason, ScopedGauge};
+use crate::metrics::{CodecLabel, RejectReason, ScopedGauge};
 use crate::server::ServerState;
 use rsipstack::dialog::server_dialog::ServerInviteDialog;
 use rsipstack::sip as rsip;
@@ -116,7 +116,9 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
         }
 
         info!(dialog_id = %dialog_id, "Call accepted, starting audio handler");
-        let _active_calls_guard = ScopedGauge::new(metrics::calls_active());
+        let _active_calls_guard = ScopedGauge::new(metrics::calls_active(CodecLabel::from(
+            offer.codec_name.as_str(),
+        )));
         metrics::calls_accepted().increment(1);
 
         // Start the media session and audio handler
