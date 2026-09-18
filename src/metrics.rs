@@ -4,9 +4,11 @@
 //! [`ensure_initialized`] is called by `SipServer::new`, so applications only need to
 //! install a metrics recorder before constructing a server.
 //!
-//! Every labelled metric gets its label values from an enum deriving [`strum::EnumIter`],
-//! so the set of labels is defined exactly once: at the enum. Nothing here keeps a
-//! separate hand-written list of variants.
+//! Most labelled metrics get their label values from an enum deriving [`strum::EnumIter`],
+//! so the set of labels is defined exactly once: at the enum. The exception is the `codec`
+//! label on [`CALLS_ACCEPTED_TOTAL`], whose values are derived from
+//! [`sdp::SUPPORTED_CODECS`](crate::media::sdp::SUPPORTED_CODECS) instead - see
+//! [`codec_label`] - so adding a codec there doesn't require a matching edit here.
 
 use std::{sync::Once, time::Duration};
 
@@ -93,46 +95,38 @@ pub fn calls_rejected(reason: RejectReason) -> metrics::Counter {
     )
 }
 
-pub fn calls_accepted() -> metrics::Counter {
+/// Label value for the `codec` label on [`CALLS_ACCEPTED_TOTAL`], for a codec name that
+/// isn't in [`sdp::SUPPORTED_CODECS`](crate::media::sdp::SUPPORTED_CODECS).
+///
+/// Reachable via the `sdp` negotiation fallback where none of the offered codecs are
+/// supported and the first offered codec is used anyway - its name is then arbitrary,
+/// peer-controlled text, so it must never be used as a label value directly. Mirrors the
+/// reasoning behind [`TerminatedLabel`] dropping the `StatusCode` payload of its
+/// `ProxyError`/`UacOther`/`UasOther` variants.
+const OTHER_CODEC_LABEL: &str = "other";
+
+/// Resolves `codec_name` to the label value [`calls_accepted`] should use: the canonical
+/// entry from [`sdp::SUPPORTED_CODECS`](crate::media::sdp::SUPPORTED_CODECS) it
+/// case-insensitively matches, or [`OTHER_CODEC_LABEL`] if it matches none. Deriving the
+/// label set from that single list - rather than a hand-maintained enum here - means a
+/// codec added there is automatically counted, with no change needed in this file.
+pub fn codec_label(codec_name: &str) -> &'static str {
+    crate::media::sdp::canonical_codec_name(codec_name).unwrap_or(OTHER_CODEC_LABEL)
+}
+
+pub fn calls_accepted(codec: &'static str) -> metrics::Counter {
     metrics::counter!(
         description: "Number of successfully accepted SIP calls",
-        CALLS_ACCEPTED_TOTAL
+        CALLS_ACCEPTED_TOTAL,
+        "codec" => codec
     )
 }
 
-/// Label values for the `codec` label on [`CALLS_ACTIVE`].
-#[derive(Debug, Clone, Copy, EnumIter, IntoStaticStr)]
-pub enum CodecLabel {
-    Opus,
-    Pcmu,
-    Pcma,
-    G722,
-    /// Catches the `sdp::negotiate_codec` fallback where none of the offered codecs are
-    /// supported and the first offered codec is used anyway (see that function's doc
-    /// comment) - its name is arbitrary, peer-controlled text, so it must never be used
-    /// as a label value directly. Mirrors the reasoning behind [`TerminatedLabel`] dropping
-    /// the `StatusCode` payload of its `ProxyError`/`UacOther`/`UasOther` variants.
-    Other,
-}
-
-impl From<&str> for CodecLabel {
-    fn from(codec_name: &str) -> Self {
-        match codec_name.to_ascii_lowercase().as_str() {
-            "opus" => Self::Opus,
-            "pcmu" => Self::Pcmu,
-            "pcma" => Self::Pcma,
-            "g722" => Self::G722,
-            _ => Self::Other,
-        }
-    }
-}
-
-pub fn calls_active(codec: CodecLabel) -> metrics::Gauge {
+pub fn calls_active() -> metrics::Gauge {
     metrics::gauge!(
         unit: metrics::Unit::Count,
         description: "Number of currently active SIP calls",
-        CALLS_ACTIVE,
-        "codec" => <&'static str>::from(codec)
+        CALLS_ACTIVE
     )
 }
 
@@ -324,10 +318,14 @@ pub fn ensure_initialized() {
         for reason in RejectReason::iter() {
             calls_rejected(reason).absolute(0);
         }
-        calls_accepted().absolute(0);
-        for codec in CodecLabel::iter() {
-            calls_active(codec).set(0);
+        for codec in crate::media::sdp::SUPPORTED_CODECS
+            .iter()
+            .copied()
+            .chain([OTHER_CODEC_LABEL])
+        {
+            calls_accepted(codec).absolute(0);
         }
+        calls_active().set(0);
         calls_dialog_not_found().absolute(0);
         for label in TerminatedLabel::iter() {
             calls_terminated(label).absolute(0);
@@ -363,20 +361,32 @@ mod tests {
     use tokio::time::advance;
 
     #[test]
-    fn codec_label_from_str_is_case_insensitive() {
-        assert!(matches!(CodecLabel::from("opus"), CodecLabel::Opus));
-        assert!(matches!(CodecLabel::from("Opus"), CodecLabel::Opus));
-        assert!(matches!(CodecLabel::from("PCMU"), CodecLabel::Pcmu));
-        assert!(matches!(CodecLabel::from("pcma"), CodecLabel::Pcma));
-        assert!(matches!(CodecLabel::from("G722"), CodecLabel::G722));
-        assert!(matches!(CodecLabel::from("g722"), CodecLabel::G722));
+    fn codec_label_is_case_insensitive_and_canonicalized() {
+        assert_eq!(codec_label("opus"), "opus");
+        assert_eq!(codec_label("Opus"), "opus");
+        assert_eq!(codec_label("PCMU"), "PCMU");
+        assert_eq!(codec_label("pcmu"), "PCMU");
+        assert_eq!(codec_label("pcma"), "PCMA");
     }
 
     #[test]
-    fn codec_label_from_str_falls_back_to_other() {
-        assert!(matches!(CodecLabel::from("speex"), CodecLabel::Other));
-        assert!(matches!(CodecLabel::from("PT101"), CodecLabel::Other));
-        assert!(matches!(CodecLabel::from(""), CodecLabel::Other));
+    fn codec_label_falls_back_to_other_for_unsupported_names() {
+        assert_eq!(codec_label("speex"), OTHER_CODEC_LABEL);
+        assert_eq!(codec_label("PT101"), OTHER_CODEC_LABEL);
+        assert_eq!(codec_label(""), OTHER_CODEC_LABEL);
+    }
+
+    #[test]
+    #[cfg(feature = "g722")]
+    fn codec_label_recognizes_g722_when_feature_enabled() {
+        assert_eq!(codec_label("g722"), "G722");
+        assert_eq!(codec_label("G722"), "G722");
+    }
+
+    #[test]
+    #[cfg(not(feature = "g722"))]
+    fn codec_label_falls_back_to_other_for_g722_when_feature_disabled() {
+        assert_eq!(codec_label("G722"), OTHER_CODEC_LABEL);
     }
 
     /// Histogram sink that records every sample into a shared `Vec`, so a test can assert

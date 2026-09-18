@@ -57,7 +57,10 @@ pub struct SdpOffer {
 ///
 /// G.722 is only advertised when the `g722` feature is enabled; otherwise it is
 /// omitted so the negotiator never selects a codec `create_codec` cannot build.
-const SUPPORTED_CODECS: &[&str] = &[
+///
+/// This is `pub(crate)` so metrics can derive their codec label set from this single
+/// list (see [`canonical_codec_name`]) instead of keeping a hand-maintained copy in sync.
+pub(crate) const SUPPORTED_CODECS: &[&str] = &[
     "opus",
     #[cfg(feature = "g722")]
     "G722",
@@ -67,9 +70,18 @@ const SUPPORTED_CODECS: &[&str] = &[
 
 /// Check if we support a codec by name (case-insensitive)
 fn is_supported_codec(name: &str) -> bool {
+    canonical_codec_name(name).is_some()
+}
+
+/// Case-insensitively matches `name` against [`SUPPORTED_CODECS`], returning the
+/// canonically-cased entry (e.g. `"PCMU"`) rather than the input as-is - so two
+/// differently-cased offers of the same codec resolve to one identical value.
+/// `None` if `name` isn't in [`SUPPORTED_CODECS`].
+pub(crate) fn canonical_codec_name(name: &str) -> Option<&'static str> {
     SUPPORTED_CODECS
         .iter()
-        .any(|&supported| supported.eq_ignore_ascii_case(name))
+        .find(|&&supported| supported.eq_ignore_ascii_case(name))
+        .copied()
 }
 
 /// Parse an SDP offer and extract relevant information
