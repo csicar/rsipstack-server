@@ -400,6 +400,13 @@ mod tests {
         assert_eq!(codec_label("G722"), OTHER_CODEC_LABEL);
     }
 
+    #[test]
+    fn codec_label_recognizes_l16() {
+        // Unlike opus/g722, L16 has no feature flag - always recognized.
+        assert_eq!(codec_label("l16"), "L16");
+        assert_eq!(codec_label("L16"), "L16");
+    }
+
     /// Histogram sink that records every sample into a shared `Vec`, so a test can assert
     /// on exactly what `record()` emitted without installing a global metrics recorder.
     #[derive(Default)]
@@ -413,7 +420,11 @@ mod tests {
 
     fn make(
         expected: Duration,
-    ) -> (TimingDeviationMetric, Arc<RecordingSink>, Arc<RecordingSink>) {
+    ) -> (
+        TimingDeviationMetric,
+        Arc<RecordingSink>,
+        Arc<RecordingSink>,
+    ) {
         let sink = Arc::new(RecordingSink::default());
         let hist = Histogram::from_arc(sink.clone());
         let summary_sink = Arc::new(RecordingSink::default());

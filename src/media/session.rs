@@ -3,6 +3,8 @@
 use std::time::Duration;
 
 use super::deadline::Deadline;
+#[cfg(test)]
+use super::rtp::rtp_timestamp_increment;
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
 use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer, EXPECTED_SEND_INTERVAL};
 use crate::codec::{create_codec, Codec};
@@ -118,6 +120,7 @@ impl MediaSession {
         let send_socket = rtp_socket;
         let send_cancel = cancel_token;
         let payload_type = self.payload_type;
+        let codec_name = self.codec_name.clone();
         tokio::spawn(async move {
             Self::rtp_send_task(
                 send_socket,
@@ -125,6 +128,7 @@ impl MediaSession {
                 send_cancel,
                 send_codec,
                 payload_type,
+                codec_name,
             )
             .await;
         });
@@ -215,9 +219,10 @@ impl MediaSession {
         cancel_token: CancellationToken,
         mut codec: Option<Box<dyn Codec>>,
         payload_type: u8,
+        codec_name: String,
     ) {
         let mut packet_count = 0u64;
-        let mut rtp_state = RtpSendState::new(payload_type);
+        let mut rtp_state = RtpSendState::new(payload_type, &codec_name);
         let mut rtp_send_timing_deviation_metric =
             metrics::rtp_send_timing_deviation(EXPECTED_SEND_INTERVAL.duration());
 
@@ -368,6 +373,22 @@ mod tests {
         }
     }
 
+    fn l16_offer() -> SdpOffer {
+        // Use a random peer port to avoid collisions between parallel tests
+        let peer_port = 30000 + (rand::random::<u16>() % 10000);
+        let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
+        SdpOffer {
+            peer_addr,
+            peer_port: PeerPort(peer_port),
+            codecs: vec![CodecInfo {
+                payload_type: 97,
+                codec_name: "L16".to_string(),
+            }],
+            payload_type: 97,
+            codec_name: "L16".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn test_media_session_sdp_pcmu_only() {
         let offer = pcmu_offer();
@@ -410,6 +431,48 @@ mod tests {
         assert!(sdp.contains("PCMU/8000"));
         // Payload types should match what was offered
         assert!(sdp.contains("a=rtpmap:111 opus"));
+        assert!(sdp.contains("a=rtpmap:0 PCMU"));
+    }
+
+    #[tokio::test]
+    async fn test_media_session_sdp_l16_only() {
+        let offer = l16_offer();
+        let setup = setup_test_session(&offer, Duration::MAX).await;
+
+        let sdp = setup.session.generate_sdp_answer();
+        assert!(sdp.contains(&format!("m=audio {}", setup.rtp_port)));
+        assert!(sdp.contains("a=rtpmap:97 L16/16000"));
+    }
+
+    #[tokio::test]
+    async fn test_media_session_sdp_multiple_codecs_with_l16() {
+        let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
+        let peer_port = PeerPort(5002);
+        let offer = SdpOffer {
+            peer_addr,
+            peer_port,
+            codecs: vec![
+                CodecInfo {
+                    payload_type: 97,
+                    codec_name: "L16".to_string(),
+                },
+                CodecInfo {
+                    payload_type: 0,
+                    codec_name: "PCMU".to_string(),
+                },
+            ],
+            payload_type: 97,
+            codec_name: "L16".to_string(),
+        };
+
+        let setup = setup_test_session(&offer, Duration::MAX).await;
+
+        let sdp = setup.session.generate_sdp_answer();
+        // Should contain both offered codecs
+        assert!(sdp.contains("L16/16000"));
+        assert!(sdp.contains("PCMU/8000"));
+        // Payload types should match what was offered
+        assert!(sdp.contains("a=rtpmap:97 L16"));
         assert!(sdp.contains("a=rtpmap:0 PCMU"));
     }
 
@@ -475,6 +538,7 @@ mod tests {
             sequence: 0,
             timestamp: 0,
             payload_type: 0,
+            timestamp_increment: rtp_timestamp_increment("PCMU"),
         };
 
         // Send packets every 50ms for 250ms total (longer than the 100ms timeout)

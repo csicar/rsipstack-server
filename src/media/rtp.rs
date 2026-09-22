@@ -11,7 +11,11 @@ use rtp_rs::RtpReader;
 use tokio::net::UdpSocket;
 use tracing::{debug, trace, warn};
 
-use crate::{media::PeerSocketAddr, metrics, server::LocalIpAddr};
+use crate::{
+    media::{sdp::clock_rate_for_codec, PeerSocketAddr},
+    metrics,
+    server::LocalIpAddr,
+};
 
 /// Represents an audio frame with decoded PCM samples
 ///
@@ -42,15 +46,17 @@ pub(crate) struct RtpSendState {
     pub timestamp: u32,
     /// Payload type (determined by negotiated codec)
     pub payload_type: u8,
+    pub timestamp_increment: TimestampIncrement,
 }
 
 impl RtpSendState {
-    pub fn new(payload_type: u8) -> Self {
+    pub fn new(payload_type: u8, codec_name: &str) -> Self {
         Self {
             ssrc: rand::random(),
             sequence: rand::random(),
             timestamp: rand::random(),
             payload_type,
+            timestamp_increment: rtp_timestamp_increment(codec_name),
         }
     }
 
@@ -60,24 +66,33 @@ impl RtpSendState {
         self.sequence = self.sequence.wrapping_add(1);
         self.timestamp = self
             .timestamp
-            .wrapping_add(rtp_timestamp_increment(self.payload_type));
+            .wrapping_add(self.timestamp_increment.ticks());
         current
     }
 }
 
-/// RTP timestamp advance per 20ms frame for a given payload type.
-///
-/// Per RFC 3551, PCMU/PCMA use an 8kHz clock (160 per 20ms frame). G.722
-/// (static PT 9) also uses an 8kHz RTP clock by RFC 3551 §4.5.2 convention,
-/// even though it samples audio at 16kHz. Dynamic payload types are only ever
-/// negotiated for Opus today, which uses a 48kHz clock (960 per 20ms frame).
-pub fn rtp_timestamp_increment(payload_type: u8) -> u32 {
-    match payload_type {
-        0 | 8 | 9 => 160,
-        _ => 960,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TimestampIncrement(u32);
+
+impl TimestampIncrement {
+    pub fn ticks(&self) -> u32 {
+        self.0
     }
 }
 
+/// RTP timestamp advance per 20ms frame for a given negotiated codec.
+///
+/// Keyed by codec name rather than payload type, because payload type alone
+/// can't distinguish codecs that ride a dynamic payload type: both Opus
+/// (48kHz clock, 960 per 20ms frame) and L16 (16kHz clock, 320 per 20ms
+/// frame) are negotiated dynamically, so the same numeric payload type could
+/// mean either one depending on the call. Per RFC 3551, PCMU/PCMA use an
+/// 8kHz clock (160 per 20ms frame); G.722 (static PT 9) also uses an 8kHz
+/// RTP clock by RFC 3551 §4.5.2 convention, even though it samples audio at
+/// 16kHz.
+pub fn rtp_timestamp_increment(codec_name: &str) -> TimestampIncrement {
+    TimestampIncrement(clock_rate_for_codec(codec_name).hz() * 20 / 1000)
+}
 /// Raw RTP packet data (before decoding)
 #[allow(dead_code)]
 pub(crate) struct RawRtpPacket {
@@ -286,6 +301,7 @@ mod tests {
             sequence: 2,
             timestamp: 320,
             payload_type: 0,
+            timestamp_increment: TimestampIncrement(160),
         };
         let packet = build_rtp_packet(&payload, &state);
 
@@ -309,31 +325,55 @@ mod tests {
 
     #[test]
     fn test_rtp_timestamp_increment_pcmu() {
-        assert_eq!(rtp_timestamp_increment(0), 160);
+        assert_eq!(rtp_timestamp_increment("PCMU"), TimestampIncrement(160));
     }
 
     #[test]
     fn test_rtp_timestamp_increment_pcma() {
-        assert_eq!(rtp_timestamp_increment(8), 160);
+        assert_eq!(rtp_timestamp_increment("PCMA"), TimestampIncrement(160));
     }
 
+    #[cfg(feature = "g722")]
     #[test]
     fn test_rtp_timestamp_increment_g722() {
         // Per RFC 3551 §4.5.2, G.722 (static PT 9) uses an 8kHz RTP clock
         // despite sampling audio at 16kHz, so a 20ms frame advances by 160.
-        assert_eq!(rtp_timestamp_increment(9), 160);
+        // Gated on the feature because the name-keyed lookup only resolves
+        // "G722" correctly when it's actually in SUPPORTED_CODECS.
+        assert_eq!(rtp_timestamp_increment("G722"), TimestampIncrement(160));
     }
 
     #[test]
-    fn test_rtp_timestamp_increment_dynamic_payload_type_is_48khz() {
-        // Dynamic payload types (96-127) are only ever negotiated for Opus
-        // today, which runs on a 48kHz RTP clock.
-        assert_eq!(rtp_timestamp_increment(96), 960);
+    fn test_rtp_timestamp_increment_l16() {
+        // L16 at 16kHz rides a dynamic payload type, same as Opus - but must
+        // resolve to a different clock rate (320 per 20ms, not 960).
+        assert_eq!(rtp_timestamp_increment("L16"), TimestampIncrement(320));
+    }
+
+    #[cfg(feature = "opus")]
+    #[test]
+    fn test_rtp_timestamp_increment_opus() {
+        assert_eq!(rtp_timestamp_increment("opus"), TimestampIncrement(960));
+    }
+
+    #[cfg(feature = "opus")]
+    #[test]
+    fn test_rtp_timestamp_increment_distinguishes_dynamic_pt_codecs() {
+        // L16 and Opus are both negotiated on dynamic payload types - the
+        // same numeric PT could mean either one depending on the call. The
+        // lookup must be keyed by codec name, not payload type, or this
+        // would silently collapse to one shared (wrong) rate for one of them.
+        assert_eq!(rtp_timestamp_increment("L16"), TimestampIncrement(320));
+        assert_eq!(rtp_timestamp_increment("opus"), TimestampIncrement(960));
+        assert_ne!(
+            rtp_timestamp_increment("L16"),
+            rtp_timestamp_increment("opus")
+        );
     }
 
     #[test]
     fn test_next_advances_timestamp_by_160_for_pcmu() {
-        let mut state = RtpSendState::new(0);
+        let mut state = RtpSendState::new(0, "PCMU");
         let initial_timestamp = state.timestamp;
 
         state.next();
@@ -343,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_next_advances_timestamp_by_160_for_pcma() {
-        let mut state = RtpSendState::new(8);
+        let mut state = RtpSendState::new(8, "PCMA");
         let initial_timestamp = state.timestamp;
 
         state.next();
@@ -351,9 +391,10 @@ mod tests {
         assert_eq!(state.timestamp, initial_timestamp.wrapping_add(160));
     }
 
+    #[cfg(feature = "opus")]
     #[test]
     fn test_next_advances_timestamp_by_960_for_opus() {
-        let mut state = RtpSendState::new(96);
+        let mut state = RtpSendState::new(96, "opus");
         let initial_timestamp = state.timestamp;
 
         state.next();
@@ -363,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_next_advances_sequence_by_one() {
-        let mut state = RtpSendState::new(0);
+        let mut state = RtpSendState::new(0, "PCMU");
         let initial_sequence = state.sequence;
 
         state.next();
@@ -373,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_next_returns_state_before_advancing() {
-        let mut state = RtpSendState::new(0);
+        let mut state = RtpSendState::new(0, "PCMU");
         let initial_timestamp = state.timestamp;
         let initial_sequence = state.sequence;
 
