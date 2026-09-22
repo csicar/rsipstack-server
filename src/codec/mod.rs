@@ -3,6 +3,7 @@
 //! This module provides codec encoding/decoding for RTP audio.
 //! All codecs normalize audio to 48kHz PCM i16 samples.
 
+mod l16;
 mod pcma;
 mod pcmu;
 
@@ -12,6 +13,7 @@ mod opus;
 #[cfg(feature = "g722")]
 mod g722;
 
+pub use l16::L16Codec;
 pub use pcma::PcmaCodec;
 pub use pcmu::PcmuCodec;
 
@@ -46,6 +48,7 @@ pub trait Codec: Send {
 /// - 8: PCMA (G.711 A-law)
 /// - 9: G.722 (when "g722" feature is enabled)
 /// - Dynamic types for Opus (when "opus" feature is enabled)
+/// - Dynamic types for L16 (16kHz, mono, always enabled)
 pub fn create_codec(payload_type: u8, codec_name: Option<&str>) -> Option<Box<dyn Codec>> {
     match payload_type {
         0 => Some(Box::new(PcmuCodec::new())),
@@ -54,11 +57,15 @@ pub fn create_codec(payload_type: u8, codec_name: Option<&str>) -> Option<Box<dy
         9 => Some(Box::new(G722Codec::new())),
         _ => {
             // For dynamic payload types, check codec name
-            #[cfg(feature = "opus")]
             if let Some(name) = codec_name {
+                #[cfg(feature = "opus")]
                 if name.eq_ignore_ascii_case("opus") {
                     return OpusCodec::new().ok().map(|c| Box::new(c) as Box<dyn Codec>);
-                }
+                };
+
+                if name.eq_ignore_ascii_case("l16") {
+                    return Some(Box::new(L16Codec::new()) as Box<dyn Codec>);
+                };
             }
             let _ = codec_name; // Suppress unused warning when opus feature is disabled
             None
@@ -95,6 +102,15 @@ mod tests {
     fn test_create_g722_codec() {
         // G.722 uses the static payload type 9.
         let codec = create_codec(9, Some("G722"));
+        assert!(codec.is_some());
+        assert_eq!(codec.unwrap().samples_per_frame(), 960);
+    }
+
+    #[test]
+    fn test_create_l16_codec() {
+        // L16 has no static payload type; it's always negotiated dynamically
+        // and identified by name.
+        let codec = create_codec(97, Some("L16"));
         assert!(codec.is_some());
         assert_eq!(codec.unwrap().samples_per_frame(), 960);
     }

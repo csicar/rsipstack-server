@@ -41,6 +41,23 @@ impl std::fmt::Display for PeerIpAddr {
     }
 }
 
+pub(crate) struct ClockRateHz(u32);
+
+impl ClockRateHz {
+    pub fn hz(&self) -> u32 {
+        self.0
+    }
+}
+
+pub(crate) fn clock_rate_for_codec(name: &str) -> ClockRateHz {
+    match canonical_codec_name(name) {
+        Some("PCMU") | Some("PCMA") | Some("G722") => ClockRateHz(8000),
+        Some("L16") => ClockRateHz(16000),
+        Some("opus") => ClockRateHz(48000),
+        _ => ClockRateHz(48000), // fallback, shouldn't be reached for a negotiated codec
+    }
+}
+
 /// Parsed SDP offer information
 #[derive(Debug, Clone)]
 pub struct SdpOffer {
@@ -68,6 +85,7 @@ pub(crate) const SUPPORTED_CODECS: &[&str] = &[
     "G722",
     "PCMU",
     "PCMA",
+    "L16",
 ];
 
 /// Check if we support a codec by name (case-insensitive)
@@ -132,6 +150,11 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
                 for attr in &audio_media.attributes {
                     if let sdp_rs::lines::Attribute::Rtpmap(rtpmap) = attr {
                         if rtpmap.payload_type == *pt as u32 {
+                            if rtpmap.encoding_name.eq_ignore_ascii_case("l16")
+                                && rtpmap.clock_rate != 16000
+                            {
+                                break;
+                            }
                             found_codec = Some(rtpmap.encoding_name.clone());
                             break;
                         }
@@ -216,6 +239,7 @@ pub fn generate_sdp_answer(
             "pcma" => format!("a=rtpmap:{} PCMA/8000\r\n", codec.payload_type),
             // G.722 carries 16kHz audio but by convention advertises 8000.
             "g722" => format!("a=rtpmap:{} G722/8000\r\n", codec.payload_type),
+            "l16" => format!("a=rtpmap:{} L16/16000\r\n", codec.payload_type),
             _ => continue,
         };
         rtpmap_lines.push_str(&rtpmap);
@@ -420,6 +444,31 @@ mod tests {
         assert_eq!(offer.codec_name, "opus");
     }
 
+    #[test]
+    fn test_parse_sdp_offer_rejects_l16_wrong_clock_rate() {
+        // PT 97 claims to be L16 but at 8000 instead of the 16000 we support.
+        // The parser must not accept the rtpmap match, or L16Codec (which
+        // assumes 16kHz) would silently be built for 8kHz audio.
+        let sdp = "v=0\r\n\
+                   o=- 123456 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 5000 RTP/AVP 97 0\r\n\
+                   a=rtpmap:97 L16/8000\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n";
+
+        let offer = parse_sdp_offer(sdp).unwrap();
+
+        // The mismatched-rate rtpmap must not be accepted as a real match.
+        let pt97 = offer.codecs.iter().find(|c| c.payload_type == 97).unwrap();
+        assert_eq!(pt97.codec_name, "PT97");
+
+        // With L16/8000 rejected, PCMU (which we do support) must be selected.
+        assert_eq!(offer.payload_type, 0);
+        assert_eq!(offer.codec_name, "PCMU");
+    }
+
     #[cfg(feature = "opus")]
     #[test]
     fn test_parse_sdp_offer_complex() {
@@ -505,6 +554,50 @@ mod tests {
         assert!(
             answer.contains("RTP/AVP 9\r\n"),
             "answer missing G722 payload type in m= line: {}",
+            answer
+        );
+    }
+
+    #[test]
+    fn test_l16_selected_when_offered() {
+        // L16 (dynamic PT 97) is offered ahead of PCMU. L16 wins only if it
+        // is genuinely in our supported list; otherwise the selector would
+        // skip it and pick PCMU. This distinguishes real support from the
+        // "only codec offered" fallback path.
+        let sdp = "v=0\n\
+                   o=- 1 1 IN IP4 12.22.0.39\n\
+                   s=-\n\
+                   t=0 0\n\
+                   m=audio 5000 RTP/AVP 97 0\n\
+                   c=IN IP4 12.22.0.39\n\
+                   a=rtpmap:97 L16/16000\n\
+                   a=rtpmap:0 PCMU/8000\n";
+
+        let offer = parse_sdp_offer(sdp).unwrap();
+        assert_eq!(offer.payload_type, 97);
+        assert_eq!(offer.codec_name, "L16");
+    }
+
+    #[test]
+    fn test_generate_answer_includes_l16() {
+        let offered = vec![CodecInfo {
+            payload_type: 97,
+            codec_name: "L16".to_string(),
+        }];
+        let answer = generate_sdp_answer(
+            AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+            10000,
+            42,
+            &offered,
+        );
+        assert!(
+            answer.contains("a=rtpmap:97 L16/16000\r\n"),
+            "answer missing L16 rtpmap: {}",
+            answer
+        );
+        assert!(
+            answer.contains("RTP/AVP 97\r\n"),
+            "answer missing L16 payload type in m= line: {}",
             answer
         );
     }
