@@ -25,6 +25,14 @@ pub const CALLS_TERMINATED_TOTAL: &str = "rsipstack_server.calls.terminated_tota
 pub const PORTS_CAPACITY: &str = "rsipstack_server.ports.capacity";
 pub const PORTS_ALLOCATION_ATTEMPTS: &str = "rsipstack_server.ports.allocation_attempts";
 pub const PORTS_ALLOCATION_FAILURES: &str = "rsipstack_server.ports.allocation_failures";
+pub const PORTS_ALLOCATION_DURATION_SECONDS: &str =
+    "rsipstack_server.ports.allocation_duration_seconds";
+pub const TOKIO_GLOBAL_QUEUE_DEPTH: &str = "rsipstack_server.tokio.global_queue_depth";
+pub const TOKIO_NUM_ALIVE_TASKS: &str = "rsipstack_server.tokio.num_alive_tasks";
+pub const TOKIO_WORKER_BUSY_NANOS_TOTAL: &str = "rsipstack_server.tokio.worker_busy_nanos_total";
+pub const TOKIO_WORKER_LOCAL_QUEUE_DEPTH: &str = "rsipstack_server.tokio.worker_local_queue_depth";
+pub const TOKIO_WORKER_MEAN_POLL_TIME_SECONDS: &str =
+    "rsipstack_server.tokio.worker_mean_poll_time_seconds";
 pub const DRAIN_ACTIVE: &str = "rsipstack_server.drain_active";
 pub const RTP_PACKETS_SENT_TOTAL: &str = "rsipstack_server.rtp.packets_sent_total";
 pub const RTP_SEND_ERRORS_TOTAL: &str = "rsipstack_server.rtp.send_errors_total";
@@ -167,6 +175,60 @@ pub fn ports_allocation_failures() -> metrics::Counter {
     metrics::counter!(
         description: "Number of times the RTP port pool was exhausted and no socket pair could be bound",
         PORTS_ALLOCATION_FAILURES
+    )
+}
+
+pub fn port_allocation_duration(outcome: &'static str) -> metrics::Histogram {
+    metrics::histogram!(
+        unit: metrics::Unit::Seconds,
+        description: "Wall-clock time spent searching for a free RTP port pair",
+        PORTS_ALLOCATION_DURATION_SECONDS,
+        "outcome" => outcome
+    )
+}
+
+pub fn tokio_worker_busy_nanos_total(worker: String) -> metrics::Counter {
+    metrics::counter!(
+        unit: metrics::Unit::Nanoseconds,
+        description: "Cumulative time this tokio worker thread has spent actually running (not parked)",
+        TOKIO_WORKER_BUSY_NANOS_TOTAL,
+        "worker" => worker
+    )
+}
+
+pub fn tokio_worker_local_queue_depth(worker: String) -> metrics::Gauge {
+    metrics::gauge!(
+        unit: metrics::Unit::Count,
+        description: "Number of tasks queued on this tokio worker's own local run queue",
+        TOKIO_WORKER_LOCAL_QUEUE_DEPTH,
+        "worker" => worker
+    )
+}
+
+pub fn tokio_worker_mean_poll_time_seconds(worker: String) -> metrics::Gauge {
+    metrics::gauge!(
+        unit: metrics::Unit::Seconds,
+        description: "Tokio's rolling mean poll duration for this worker thread",
+        TOKIO_WORKER_MEAN_POLL_TIME_SECONDS,
+        "worker" => worker
+    )
+}
+
+pub fn tokio_global_queue_depth() -> metrics::Gauge {
+    metrics::gauge!(
+        unit: metrics::Unit::Count,
+        description: "Number of tasks queued on tokio's shared (not worker-local) run queue",
+        TOKIO_GLOBAL_QUEUE_DEPTH
+    )
+}
+
+/// Total tokio tasks currently alive (spawned but not yet completed) across the whole runtime -
+/// a general fan-out/leak sanity check alongside the queue-depth metrics.
+pub fn tokio_num_alive_tasks() -> metrics::Gauge {
+    metrics::gauge!(
+        unit: metrics::Unit::Count,
+        description: "Total tokio tasks currently alive (spawned, not yet completed) across the whole runtime",
+        TOKIO_NUM_ALIVE_TASKS
     )
 }
 

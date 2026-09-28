@@ -4,6 +4,7 @@ use std::{
     io,
     net::SocketAddr,
     sync::atomic::{AtomicU16, Ordering::Relaxed},
+    time::Instant,
 };
 
 use rsipstack::Error::Error;
@@ -252,6 +253,9 @@ pub async fn try_allocate_socket_pair(
     rtp_port_range: &RtpPortRange,
     local_ip_addr: LocalIpAddr,
 ) -> Option<RtpSocketPair> {
+    // Timing added purely for observability (see PORTS_ALLOCATION_DURATION_SECONDS) - the
+    // cursor search logic below is otherwise untouched.
+    let search_start = Instant::now();
     for num_attempts in 0..rtp_port_range.capacity() {
         let port_pair = rtp_port_range.next_port_pair();
         trace!("Attempting to bind to port pair {:?}", port_pair);
@@ -261,10 +265,12 @@ pub async fn try_allocate_socket_pair(
                 num_attempts + 1
             );
             metrics::ports_allocation_attempts().record(num_attempts + 1);
+            metrics::port_allocation_duration("success").record(search_start.elapsed().as_secs_f64());
             return Some(socket_pair);
         }
     }
     metrics::ports_allocation_failures().increment(1);
+    metrics::port_allocation_duration("failure").record(search_start.elapsed().as_secs_f64());
     None
 }
 

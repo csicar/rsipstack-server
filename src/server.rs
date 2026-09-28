@@ -169,6 +169,7 @@ impl<F: AudioHandlerFactory> SipServer<F> {
     /// ```
     pub async fn new(config: ServerConfig, handler_factory: F) -> Result<Self> {
         metrics::ensure_initialized();
+        crate::runtime_metrics::spawn_collector(Duration::from_secs(1));
 
         let cancel_token = CancellationToken::new();
         let drain_token = DrainToken::new();

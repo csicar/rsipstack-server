@@ -9,6 +9,13 @@ license = "MIT"
 name = "rsipstack_server"
 path = "src/lib.rs"
 
+[lints.rust]
+# tokio's own per-worker RuntimeMetrics accessors (used in src/runtime_metrics.rs) are
+# gated behind this - only set when the binary is built with `RUSTFLAGS="--cfg
+# tokio_unstable"`. Declaring it here (rather than leaving rustc's unexpected_cfgs lint
+# to flag it) is what tokio's own docs recommend for consumers of that API.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }
+
 [[example]]
 name = "echo_server"
 path = "examples/echo_server.rs"

@@ -52,6 +52,7 @@ pub mod codec;
 mod drain;
 mod media;
 mod metrics;
+mod runtime_metrics;
 mod server;
 
 // Re-export public API
