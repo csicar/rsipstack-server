@@ -105,6 +105,7 @@ impl MediaSession {
         // Spawn RTP receive task
         let recv_socket = rtp_socket.clone();
         let recv_cancel = cancel_token.clone();
+        let recv_codec_name = self.codec_name.clone();
         tokio::spawn(async move {
             Self::rtp_receive_task(
                 recv_socket,
@@ -112,6 +113,7 @@ impl MediaSession {
                 recv_cancel,
                 recv_codec,
                 self.media_receive_timeout,
+                recv_codec_name,
             )
             .await;
         });
@@ -143,10 +145,12 @@ impl MediaSession {
         cancel_token: CancellationToken,
         mut codec: Option<Box<dyn Codec>>,
         media_receive_timeout: Duration,
+        codec_name: String,
     ) {
         let mut buf = vec![0u8; 2048];
         let mut packet_count = 0u64;
         let mut deadline = Deadline::new(media_receive_timeout);
+        let decode_duration_metric = metrics::codec_decode_duration(metrics::codec_label(&codec_name));
 
         loop {
             tokio::select! {
@@ -185,12 +189,14 @@ impl MediaSession {
                                 deadline.reset();
 
                                 // Decode the payload using codec
+                                let decode_start = std::time::Instant::now();
                                 let samples = if let Some(ref mut c) = codec {
                                     c.decode(&raw.payload)
                                 } else {
                                     // Passthrough: interpret bytes as samples (for testing)
                                     raw.payload.iter().map(|&b| (b as i16 - 128) * 256).collect()
                                 };
+                                decode_duration_metric.record(decode_start.elapsed().as_secs_f64());
 
                                 let frame = AudioFrame { samples };
 
@@ -225,6 +231,8 @@ impl MediaSession {
         let mut rtp_state = RtpSendState::new(payload_type, &codec_name);
         let mut rtp_send_timing_deviation_metric =
             metrics::rtp_send_timing_deviation(EXPECTED_SEND_INTERVAL.duration());
+        let encode_duration_metric = metrics::codec_encode_duration(metrics::codec_label(&codec_name));
+        let send_duration_metric = metrics::rtp_send_duration(metrics::codec_label(&codec_name));
 
         loop {
             tokio::select! {
@@ -236,12 +244,14 @@ impl MediaSession {
                     match frame {
                         Some(frame) => {
                             // Encode the samples using codec
+                            let encode_start = std::time::Instant::now();
                             let payload = if let Some(ref mut c) = codec {
                                 c.encode(&frame.samples)
                             } else {
                                 // Passthrough: convert samples back to bytes (for testing)
                                 frame.samples.iter().map(|&s| ((s / 256) + 128) as u8).collect()
                             };
+                            encode_duration_metric.record(encode_start.elapsed().as_secs_f64());
 
                             // Skip empty payloads (codec error)
                             if payload.is_empty() {
@@ -252,7 +262,10 @@ impl MediaSession {
                             let rtp = rtp_state.next();
                             let packet = build_rtp_packet(&payload, &rtp);
 
-                            match socket.send(&packet).await {
+                            let send_start = std::time::Instant::now();
+                            let send_result = socket.send(&packet).await;
+                            send_duration_metric.record(send_start.elapsed().as_secs_f64());
+                            match send_result {
                                 Ok(_) => {
                                     packet_count += 1;
                                     rtp_send_timing_deviation_metric.record();

@@ -38,6 +38,9 @@ pub const RTP_PACKETS_SENT_TOTAL: &str = "rsipstack_server.rtp.packets_sent_tota
 pub const RTP_SEND_ERRORS_TOTAL: &str = "rsipstack_server.rtp.send_errors_total";
 pub const RTP_SEND_TIMING_DEVIATION_SECONDS: &str =
     "rsipstack_server.rtp.send_timing_deviation_seconds";
+pub const RTP_SEND_DURATION_SECONDS: &str = "rsipstack_server.rtp.send_duration_seconds";
+pub const CODEC_ENCODE_DURATION_SECONDS: &str = "rsipstack_server.codec.encode_duration_seconds";
+pub const CODEC_DECODE_DURATION_SECONDS: &str = "rsipstack_server.codec.decode_duration_seconds";
 pub const RTP_SEND_TIMING_DEVIATION_SUMMARY_SECONDS: &str =
     "rsipstack_server.rtp.send_timing_deviation_summary_seconds";
 
@@ -211,6 +214,33 @@ pub fn tokio_worker_mean_poll_time_seconds(worker: String) -> metrics::Gauge {
         description: "Tokio's rolling mean poll duration for this worker thread",
         TOKIO_WORKER_MEAN_POLL_TIME_SECONDS,
         "worker" => worker
+    )
+}
+
+pub fn rtp_send_duration(codec: &'static str) -> metrics::Histogram {
+    metrics::histogram!(
+        unit: metrics::Unit::Seconds,
+        description: "Wall-clock time spent inside a single RTP socket.send call",
+        RTP_SEND_DURATION_SECONDS,
+        "codec" => codec
+    )
+}
+
+pub fn codec_encode_duration(codec: &'static str) -> metrics::Histogram {
+    metrics::histogram!(
+        unit: metrics::Unit::Seconds,
+        description: "Wall-clock time spent inside a single Codec::encode call",
+        CODEC_ENCODE_DURATION_SECONDS,
+        "codec" => codec
+    )
+}
+
+pub fn codec_decode_duration(codec: &'static str) -> metrics::Histogram {
+    metrics::histogram!(
+        unit: metrics::Unit::Seconds,
+        description: "Wall-clock time spent inside a single Codec::decode call",
+        CODEC_DECODE_DURATION_SECONDS,
+        "codec" => codec
     )
 }
 
