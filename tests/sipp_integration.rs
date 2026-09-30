@@ -200,6 +200,77 @@ async fn test_echo_server_with_sipp() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_unsupported_codec_offer_rejected_with_488() {
+    let sipp_cmd = match get_sipp_command() {
+        Some(cmd) => cmd,
+        None => {
+            eprintln!("Skipping test: sipp not available (set SIPP_PATH env var)");
+            return;
+        }
+    };
+
+    let sip_port = allocate_udp_port();
+    let min_port = allocate_udp_port();
+    let max_port = min_port + 99;
+
+    let local_ip = get_local_ip();
+    let server_addr = format!("{}:{}", local_ip, sip_port);
+
+    let config = ServerConfig {
+        port: sip_port,
+        bind_addr: Some(local_ip.parse().unwrap()),
+        external_ip: None,
+        min_port,
+        max_port,
+        ..Default::default()
+    };
+
+    let server = SipServer::new(config, || EchoHandler).await.unwrap();
+
+    let server_handle = tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // The scenario offers only speex, which the server doesn't support, and
+    // fails unless the INVITE is answered with 488 Not Acceptable Here.
+    let scenario_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("test")
+        .join("uac_unsupported_codec.xml");
+
+    let sipp_result = run_sipp(
+        &sipp_cmd,
+        &[
+            "-sf",
+            scenario_path.to_str().unwrap(),
+            &server_addr,
+            "-m",
+            "1", // 1 call
+            "-timeout",
+            "30s",
+            "-timeout_error",
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&sipp_result.stdout);
+    let stderr = String::from_utf8_lossy(&sipp_result.stderr);
+
+    server_handle.abort();
+
+    if !sipp_result.status.success() {
+        eprintln!("sipp stdout:\n{}", stdout);
+        eprintln!("sipp stderr:\n{}", stderr);
+    }
+
+    assert!(
+        sipp_result.status.success(),
+        "sipp failed with exit code: {:?}",
+        sipp_result.status.code()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_multiple_concurrent_calls() {
     let sipp_cmd = match get_sipp_command() {
         Some(cmd) => cmd,

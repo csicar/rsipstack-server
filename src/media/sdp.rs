@@ -88,6 +88,10 @@ pub(crate) fn canonical_codec_name(name: &str) -> Option<&'static str> {
 }
 
 /// Parse an SDP offer and extract relevant information
+///
+/// Selects the first offered codec we support, respecting the caller's preference order.
+/// Returns [`SdpParseError::NoSupportedCodec`] if none of the offered codecs are supported,
+/// so the caller can reject the call instead of answering with an empty codec list.
 pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
     let sdp = sdp_rs::SessionDescription::try_from(sdp_body)
         .map_err(|e| SdpParseError::ParseError(format!("{:?}", e)))?;
@@ -157,13 +161,7 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
         .iter()
         .find(|c| is_supported_codec(&c.codec_name))
         .cloned()
-        .unwrap_or_else(|| {
-            // Fallback to first offered codec if none supported
-            codecs.first().cloned().unwrap_or(CodecInfo {
-                payload_type: 0,
-                codec_name: "PCMU".to_string(),
-            })
-        });
+        .ok_or(SdpParseError::NoSupportedCodec)?;
 
     Ok(SdpOffer {
         peer_addr,
@@ -255,6 +253,7 @@ pub enum SdpParseError {
     #[allow(dead_code)]
     InvalidAddress(String),
     NoAudioMedia,
+    NoSupportedCodec,
 }
 
 impl std::fmt::Display for SdpParseError {
@@ -266,6 +265,7 @@ impl std::fmt::Display for SdpParseError {
             }
             SdpParseError::InvalidAddress(addr) => write!(f, "Invalid address in SDP: {}", addr),
             SdpParseError::NoAudioMedia => write!(f, "No audio media in SDP"),
+            SdpParseError::NoSupportedCodec => write!(f, "No supported codec in SDP offer"),
         }
     }
 }
@@ -500,8 +500,7 @@ mod tests {
     fn test_g722_selected_when_offered() {
         // G.722 (static PT 9) is offered ahead of PCMU. G.722 wins only if it
         // is genuinely in our supported list; otherwise the selector would skip
-        // it and pick PCMU. This distinguishes real support from the
-        // "only codec offered" fallback path.
+        // it and pick PCMU.
         let sdp = "v=0\n\
                    o=- 1 1 IN IP4 12.22.0.39\n\
                    s=-\n\
@@ -545,8 +544,7 @@ mod tests {
     fn test_l16_selected_when_offered() {
         // L16 (dynamic PT 97) is offered ahead of PCMU. L16 wins only if it
         // is genuinely in our supported list; otherwise the selector would
-        // skip it and pick PCMU. This distinguishes real support from the
-        // "only codec offered" fallback path.
+        // skip it and pick PCMU.
         let sdp = "v=0\n\
                    o=- 1 1 IN IP4 12.22.0.39\n\
                    s=-\n\
@@ -583,5 +581,58 @@ mod tests {
             "answer missing L16 payload type in m= line: {}",
             answer
         );
+    }
+
+    #[test]
+    fn test_parse_sdp_offer_rejects_when_no_codec_supported() {
+        // Only telephone-event is offered: nothing we can negotiate, so the
+        // offer must be rejected rather than silently falling back to it.
+        let sdp = "v=0\r\n\
+                   o=- 123456 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 5000 RTP/AVP 101\r\n\
+                   a=rtpmap:101 telephone-event/8000\r\n";
+
+        assert!(matches!(
+            parse_sdp_offer(sdp),
+            Err(SdpParseError::NoSupportedCodec)
+        ));
+    }
+
+    #[test]
+    fn test_parse_sdp_offer_rejects_l16_wrong_clock_rate_when_only_codec() {
+        // Same wrong-rate L16 as above, but with nothing else to fall back to.
+        let sdp = "v=0\r\n\
+                   o=- 123456 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 5000 RTP/AVP 97\r\n\
+                   a=rtpmap:97 L16/8000\r\n";
+
+        assert!(matches!(
+            parse_sdp_offer(sdp),
+            Err(SdpParseError::NoSupportedCodec)
+        ));
+    }
+
+    #[test]
+    fn test_parse_sdp_offer_selects_supported_among_unsupported() {
+        // An unsupported codec listed first must not cause a rejection when a
+        // supported one is offered later.
+        let sdp = "v=0\r\n\
+                   o=- 123456 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 5000 RTP/AVP 101 0\r\n\
+                   a=rtpmap:101 telephone-event/8000\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n";
+
+        let offer = parse_sdp_offer(sdp).unwrap();
+        assert_eq!(offer.payload_type, 0);
+        assert_eq!(offer.codec_name, "PCMU");
     }
 }
