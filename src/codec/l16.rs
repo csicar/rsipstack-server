@@ -13,7 +13,7 @@
 //! This implementation resamples to/from 48kHz for the internal PCM format,
 //! using a 3x factor (16kHz * 3 = 48kHz), the same approach as G.722.
 
-use super::Codec;
+use super::{Codec, TimestampIncrement};
 
 pub struct L16Codec;
 
@@ -58,6 +58,11 @@ impl Codec for L16Codec {
 
     fn samples_per_frame(&self) -> usize {
         960
+    }
+
+    fn rtp_timestamp_increment(&self) -> TimestampIncrement {
+        // 16kHz RTP clock: 20ms = 320 ticks
+        TimestampIncrement::new(320)
     }
 }
 

@@ -41,23 +41,6 @@ impl std::fmt::Display for PeerIpAddr {
     }
 }
 
-pub(crate) struct ClockRateHz(u32);
-
-impl ClockRateHz {
-    pub fn hz(&self) -> u32 {
-        self.0
-    }
-}
-
-pub(crate) fn clock_rate_for_codec(name: &str) -> ClockRateHz {
-    match canonical_codec_name(name) {
-        Some("PCMU") | Some("PCMA") | Some("G722") => ClockRateHz(8000),
-        Some("L16") => ClockRateHz(16000),
-        Some("opus") => ClockRateHz(48000),
-        _ => ClockRateHz(48000), // fallback, shouldn't be reached for a negotiated codec
-    }
-}
-
 /// Parsed SDP offer information
 #[derive(Debug, Clone)]
 pub struct SdpOffer {

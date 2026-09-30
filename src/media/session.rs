@@ -3,11 +3,9 @@
 use std::time::Duration;
 
 use super::deadline::Deadline;
-#[cfg(test)]
-use super::rtp::rtp_timestamp_increment;
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
 use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer, EXPECTED_SEND_INTERVAL};
-use crate::codec::{create_codec, Codec};
+use crate::codec::{create_codec, Codec, TimestampIncrement};
 use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
 use crate::metrics;
@@ -15,6 +13,10 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
+
+/// RTP timestamp advance per 20ms frame at the 48kHz internal rate, used when no
+/// codec could be created for the negotiated payload type.
+const PASSTHROUGH_TIMESTAMP_INCREMENT: TimestampIncrement = TimestampIncrement::new(960);
 
 /// Media session for handling RTP audio
 pub struct MediaSession {
@@ -120,7 +122,6 @@ impl MediaSession {
         let send_socket = rtp_socket;
         let send_cancel = cancel_token;
         let payload_type = self.payload_type;
-        let codec_name = self.codec_name.clone();
         tokio::spawn(async move {
             Self::rtp_send_task(
                 send_socket,
@@ -128,7 +129,6 @@ impl MediaSession {
                 send_cancel,
                 send_codec,
                 payload_type,
-                codec_name,
             )
             .await;
         });
@@ -219,10 +219,13 @@ impl MediaSession {
         cancel_token: CancellationToken,
         mut codec: Option<Box<dyn Codec>>,
         payload_type: u8,
-        codec_name: String,
     ) {
         let mut packet_count = 0u64;
-        let mut rtp_state = RtpSendState::new(payload_type, &codec_name);
+        // Without a codec we send passthrough at the 48kHz internal rate.
+        let timestamp_increment = codec.as_ref().map_or(PASSTHROUGH_TIMESTAMP_INCREMENT, |c| {
+            c.rtp_timestamp_increment()
+        });
+        let mut rtp_state = RtpSendState::new(payload_type, timestamp_increment);
         let mut rtp_send_timing_deviation_metric =
             metrics::rtp_send_timing_deviation(EXPECTED_SEND_INTERVAL.duration());
 
@@ -538,7 +541,7 @@ mod tests {
             sequence: 0,
             timestamp: 0,
             payload_type: 0,
-            timestamp_increment: rtp_timestamp_increment("PCMU"),
+            timestamp_increment: TimestampIncrement::new(160),
         };
 
         // Send packets every 50ms for 250ms total (longer than the 100ms timeout)
