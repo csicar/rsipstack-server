@@ -63,5 +63,6 @@ pub use server::{ServerConfig, ServerState, SipServer};
 
 // Re-export useful types from dependencies
 pub use async_trait::async_trait;
+pub use audio_codec;
 pub use tokio::sync::mpsc;
 pub use tokio_util::sync::CancellationToken;
