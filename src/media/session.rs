@@ -5,7 +5,7 @@ use std::time::Duration;
 use super::deadline::Deadline;
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
 use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer, EXPECTED_SEND_INTERVAL};
-use crate::codec::{create_codec, Codec};
+use crate::codec::{create_codec, Codec, TimestampIncrement};
 use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
 use crate::metrics;
@@ -13,6 +13,10 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
+
+/// RTP timestamp advance per 20ms frame at the 48kHz internal rate, used when no
+/// codec could be created for the negotiated payload type.
+const PASSTHROUGH_TIMESTAMP_INCREMENT: TimestampIncrement = TimestampIncrement::new(960);
 
 /// Media session for handling RTP audio
 pub struct MediaSession {
@@ -217,7 +221,11 @@ impl MediaSession {
         payload_type: u8,
     ) {
         let mut packet_count = 0u64;
-        let mut rtp_state = RtpSendState::new(payload_type);
+        // Without a codec we send passthrough at the 48kHz internal rate.
+        let timestamp_increment = codec.as_ref().map_or(PASSTHROUGH_TIMESTAMP_INCREMENT, |c| {
+            c.rtp_timestamp_increment()
+        });
+        let mut rtp_state = RtpSendState::new(payload_type, timestamp_increment);
         let mut rtp_send_timing_deviation_metric =
             metrics::rtp_send_timing_deviation(EXPECTED_SEND_INTERVAL.duration());
 
@@ -368,6 +376,22 @@ mod tests {
         }
     }
 
+    fn l16_offer() -> SdpOffer {
+        // Use a random peer port to avoid collisions between parallel tests
+        let peer_port = 30000 + (rand::random::<u16>() % 10000);
+        let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
+        SdpOffer {
+            peer_addr,
+            peer_port: PeerPort(peer_port),
+            codecs: vec![CodecInfo {
+                payload_type: 97,
+                codec_name: "L16".to_string(),
+            }],
+            payload_type: 97,
+            codec_name: "L16".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn test_media_session_sdp_pcmu_only() {
         let offer = pcmu_offer();
@@ -410,6 +434,48 @@ mod tests {
         assert!(sdp.contains("PCMU/8000"));
         // Payload types should match what was offered
         assert!(sdp.contains("a=rtpmap:111 opus"));
+        assert!(sdp.contains("a=rtpmap:0 PCMU"));
+    }
+
+    #[tokio::test]
+    async fn test_media_session_sdp_l16_only() {
+        let offer = l16_offer();
+        let setup = setup_test_session(&offer, Duration::MAX).await;
+
+        let sdp = setup.session.generate_sdp_answer();
+        assert!(sdp.contains(&format!("m=audio {}", setup.rtp_port)));
+        assert!(sdp.contains("a=rtpmap:97 L16/16000"));
+    }
+
+    #[tokio::test]
+    async fn test_media_session_sdp_multiple_codecs_with_l16() {
+        let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
+        let peer_port = PeerPort(5002);
+        let offer = SdpOffer {
+            peer_addr,
+            peer_port,
+            codecs: vec![
+                CodecInfo {
+                    payload_type: 97,
+                    codec_name: "L16".to_string(),
+                },
+                CodecInfo {
+                    payload_type: 0,
+                    codec_name: "PCMU".to_string(),
+                },
+            ],
+            payload_type: 97,
+            codec_name: "L16".to_string(),
+        };
+
+        let setup = setup_test_session(&offer, Duration::MAX).await;
+
+        let sdp = setup.session.generate_sdp_answer();
+        // Should contain both offered codecs
+        assert!(sdp.contains("L16/16000"));
+        assert!(sdp.contains("PCMU/8000"));
+        // Payload types should match what was offered
+        assert!(sdp.contains("a=rtpmap:97 L16"));
         assert!(sdp.contains("a=rtpmap:0 PCMU"));
     }
 
@@ -475,6 +541,7 @@ mod tests {
             sequence: 0,
             timestamp: 0,
             payload_type: 0,
+            timestamp_increment: TimestampIncrement::new(160),
         };
 
         // Send packets every 50ms for 250ms total (longer than the 100ms timeout)

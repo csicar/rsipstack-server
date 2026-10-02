@@ -11,7 +11,7 @@
 //! This implementation resamples to/from 48kHz for the internal PCM format,
 //! using a 3x factor (16kHz * 3 = 48kHz).
 
-use super::Codec;
+use super::{Codec, TimestampIncrement};
 use audio_codec::g722::{G722Decoder, G722Encoder};
 use audio_codec::{Decoder as _, Encoder as _};
 
@@ -70,6 +70,12 @@ impl Codec for G722Codec {
     fn samples_per_frame(&self) -> usize {
         // 20ms at 48kHz = 960 samples
         960
+    }
+
+    fn rtp_timestamp_increment(&self) -> TimestampIncrement {
+        // RFC 3551 §4.5.2: G.722 uses an 8kHz RTP clock by convention, even though
+        // it samples audio at 16kHz, so 20ms = 160 ticks
+        TimestampIncrement::new(160)
     }
 }
 

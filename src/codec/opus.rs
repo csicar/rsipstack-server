@@ -5,7 +5,7 @@
 //!
 //! This implementation uses the `opus` crate for encoding/decoding.
 
-use super::Codec;
+use super::{Codec, TimestampIncrement};
 use opus::{Channels, Decoder, Encoder};
 
 /// Opus codec for 48kHz mono audio
@@ -65,6 +65,11 @@ impl Codec for OpusCodec {
     fn samples_per_frame(&self) -> usize {
         // 20ms at 48kHz = 960 samples
         960
+    }
+
+    fn rtp_timestamp_increment(&self) -> TimestampIncrement {
+        // 48kHz RTP clock: 20ms = 960 ticks
+        TimestampIncrement::new(960)
     }
 }
 

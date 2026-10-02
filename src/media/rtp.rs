@@ -11,7 +11,7 @@ use rtp_rs::RtpReader;
 use tokio::net::UdpSocket;
 use tracing::{debug, trace, warn};
 
-use crate::{media::PeerSocketAddr, metrics, server::LocalIpAddr};
+use crate::{codec::TimestampIncrement, media::PeerSocketAddr, metrics, server::LocalIpAddr};
 
 /// Represents an audio frame with decoded PCM samples
 ///
@@ -42,15 +42,17 @@ pub(crate) struct RtpSendState {
     pub timestamp: u32,
     /// Payload type (determined by negotiated codec)
     pub payload_type: u8,
+    pub timestamp_increment: TimestampIncrement,
 }
 
 impl RtpSendState {
-    pub fn new(payload_type: u8) -> Self {
+    pub fn new(payload_type: u8, timestamp_increment: TimestampIncrement) -> Self {
         Self {
             ssrc: rand::random(),
             sequence: rand::random(),
             timestamp: rand::random(),
             payload_type,
+            timestamp_increment,
         }
     }
 
@@ -60,21 +62,8 @@ impl RtpSendState {
         self.sequence = self.sequence.wrapping_add(1);
         self.timestamp = self
             .timestamp
-            .wrapping_add(rtp_timestamp_increment(self.payload_type));
+            .wrapping_add(self.timestamp_increment.ticks());
         current
-    }
-}
-
-/// RTP timestamp advance per 20ms frame for a given payload type.
-///
-/// Per RFC 3551, PCMU/PCMA use an 8kHz clock (160 per 20ms frame). G.722
-/// (static PT 9) also uses an 8kHz RTP clock by RFC 3551 §4.5.2 convention,
-/// even though it samples audio at 16kHz. Dynamic payload types are only ever
-/// negotiated for Opus today, which uses a 48kHz clock (960 per 20ms frame).
-pub fn rtp_timestamp_increment(payload_type: u8) -> u32 {
-    match payload_type {
-        0 | 8 | 9 => 160,
-        _ => 960,
     }
 }
 
@@ -255,6 +244,8 @@ pub async fn try_allocate_socket_pair(
 
 #[cfg(test)]
 mod tests {
+    use crate::codec::TimestampIncrement;
+
     use super::*;
 
     #[test]
@@ -286,6 +277,7 @@ mod tests {
             sequence: 2,
             timestamp: 320,
             payload_type: 0,
+            timestamp_increment: TimestampIncrement::new(160),
         };
         let packet = build_rtp_packet(&payload, &state);
 
@@ -308,32 +300,8 @@ mod tests {
     }
 
     #[test]
-    fn test_rtp_timestamp_increment_pcmu() {
-        assert_eq!(rtp_timestamp_increment(0), 160);
-    }
-
-    #[test]
-    fn test_rtp_timestamp_increment_pcma() {
-        assert_eq!(rtp_timestamp_increment(8), 160);
-    }
-
-    #[test]
-    fn test_rtp_timestamp_increment_g722() {
-        // Per RFC 3551 §4.5.2, G.722 (static PT 9) uses an 8kHz RTP clock
-        // despite sampling audio at 16kHz, so a 20ms frame advances by 160.
-        assert_eq!(rtp_timestamp_increment(9), 160);
-    }
-
-    #[test]
-    fn test_rtp_timestamp_increment_dynamic_payload_type_is_48khz() {
-        // Dynamic payload types (96-127) are only ever negotiated for Opus
-        // today, which runs on a 48kHz RTP clock.
-        assert_eq!(rtp_timestamp_increment(96), 960);
-    }
-
-    #[test]
     fn test_next_advances_timestamp_by_160_for_pcmu() {
-        let mut state = RtpSendState::new(0);
+        let mut state = RtpSendState::new(0, TimestampIncrement::new(160));
         let initial_timestamp = state.timestamp;
 
         state.next();
@@ -343,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_next_advances_timestamp_by_160_for_pcma() {
-        let mut state = RtpSendState::new(8);
+        let mut state = RtpSendState::new(8, TimestampIncrement::new(160));
         let initial_timestamp = state.timestamp;
 
         state.next();
@@ -351,9 +319,10 @@ mod tests {
         assert_eq!(state.timestamp, initial_timestamp.wrapping_add(160));
     }
 
+    #[cfg(feature = "opus")]
     #[test]
     fn test_next_advances_timestamp_by_960_for_opus() {
-        let mut state = RtpSendState::new(96);
+        let mut state = RtpSendState::new(96, TimestampIncrement::new(960));
         let initial_timestamp = state.timestamp;
 
         state.next();
@@ -363,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_next_advances_sequence_by_one() {
-        let mut state = RtpSendState::new(0);
+        let mut state = RtpSendState::new(0, TimestampIncrement::new(160));
         let initial_sequence = state.sequence;
 
         state.next();
@@ -373,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_next_returns_state_before_advancing() {
-        let mut state = RtpSendState::new(0);
+        let mut state = RtpSendState::new(0, TimestampIncrement::new(160));
         let initial_timestamp = state.timestamp;
         let initial_sequence = state.sequence;
 

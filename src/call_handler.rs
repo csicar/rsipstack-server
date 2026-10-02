@@ -2,7 +2,7 @@
 
 use crate::audio::handler::AudioHandler;
 use crate::media::rtp::try_allocate_socket_pair;
-use crate::media::sdp::parse_sdp_offer;
+use crate::media::sdp::{parse_sdp_offer, SdpParseError};
 use crate::media::session::MediaSession;
 use crate::media::PeerSocketAddr;
 use crate::metrics;
@@ -54,7 +54,11 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
                 warn!(dialog_id = %dialog_id, error = ?e, "Failed to parse SDP offer");
                 self.dialog
                     .reject(Some(rsip::StatusCode::NotAcceptableHere), None)?;
-                metrics::calls_rejected(RejectReason::SdpOfferInvalid).increment(1);
+                let reason = match e {
+                    SdpParseError::NoSupportedCodec => RejectReason::NoSupportedCodec,
+                    _ => RejectReason::SdpOfferInvalid,
+                };
+                metrics::calls_rejected(reason).increment(1);
                 return Ok(());
             }
         };
@@ -117,7 +121,15 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
 
         info!(dialog_id = %dialog_id, "Call accepted, starting audio handler");
         let _active_calls_guard = ScopedGauge::new(metrics::calls_active());
-        metrics::calls_accepted(metrics::codec_label(&offer.codec_name)).increment(1);
+        // Negotiation guarantees a supported codec, so a label is always found.
+        match metrics::codec_label(&offer.codec_name) {
+            Some(codec) => metrics::calls_accepted(codec).increment(1),
+            None => warn!(
+                dialog_id = %dialog_id,
+                codec = %offer.codec_name,
+                "Accepted call with a codec that has no metric label; not counted in calls_accepted"
+            ),
+        }
 
         // Start the media session and audio handler
         let (audio_in, audio_out) = media_session.start().await;

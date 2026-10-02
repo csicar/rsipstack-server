@@ -22,3 +22,6 @@ Thumbs.db
 result
 result-*
 .direnv/
+
+# Local docs
+/docs/

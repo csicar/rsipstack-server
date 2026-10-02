@@ -39,6 +39,7 @@ pub enum RejectReason {
     SdpOfferInvalid,
     RtpPortPoolExhausted,
     UdpConnectFailed,
+    NoSupportedCodec,
 }
 
 /// Label values for the `reason` label on [`CALLS_TERMINATED_TOTAL`].
@@ -95,23 +96,17 @@ pub fn calls_rejected(reason: RejectReason) -> metrics::Counter {
     )
 }
 
-/// Label value for the `codec` label on [`CALLS_ACCEPTED_TOTAL`], for a codec name that
-/// isn't in [`sdp::SUPPORTED_CODECS`](crate::media::sdp::SUPPORTED_CODECS).
-///
-/// Reachable via the `sdp` negotiation fallback where none of the offered codecs are
-/// supported and the first offered codec is used anyway - its name is then arbitrary,
-/// peer-controlled text, so it must never be used as a label value directly. Mirrors the
-/// reasoning behind [`TerminatedLabel`] dropping the `StatusCode` payload of its
-/// `ProxyError`/`UacOther`/`UasOther` variants.
-const OTHER_CODEC_LABEL: &str = "other";
-
 /// Resolves `codec_name` to the label value [`calls_accepted`] should use: the canonical
 /// entry from [`sdp::SUPPORTED_CODECS`](crate::media::sdp::SUPPORTED_CODECS) it
-/// case-insensitively matches, or [`OTHER_CODEC_LABEL`] if it matches none. Deriving the
-/// label set from that single list - rather than a hand-maintained enum here - means a
-/// codec added there is automatically counted, with no change needed in this file.
-pub fn codec_label(codec_name: &str) -> &'static str {
-    crate::media::sdp::canonical_codec_name(codec_name).unwrap_or(OTHER_CODEC_LABEL)
+/// case-insensitively matches, or `None` if it matches none. Deriving the label set from
+/// that single list - rather than a hand-maintained enum here - means a codec added there
+/// is automatically counted, with no change needed in this file.
+///
+/// `None` never occurs for a negotiated codec, since SDP negotiation rejects offers with
+/// no supported codec. It is deliberately not mapped to a catch-all label: the name is
+/// arbitrary, peer-controlled text, so it must never be used as a label value directly.
+pub fn codec_label(codec_name: &str) -> Option<&'static str> {
+    crate::media::sdp::canonical_codec_name(codec_name)
 }
 
 pub fn calls_accepted(codec: &'static str) -> metrics::Counter {
@@ -318,11 +313,7 @@ pub fn ensure_initialized() {
         for reason in RejectReason::iter() {
             calls_rejected(reason).absolute(0);
         }
-        for codec in crate::media::sdp::SUPPORTED_CODECS
-            .iter()
-            .copied()
-            .chain([OTHER_CODEC_LABEL])
-        {
+        for codec in crate::media::sdp::SUPPORTED_CODECS.iter().copied() {
             calls_accepted(codec).absolute(0);
         }
         calls_active().set(0);
@@ -362,42 +353,49 @@ mod tests {
 
     #[test]
     fn codec_label_is_case_insensitive_and_canonicalized() {
-        assert_eq!(codec_label("PCMU"), "PCMU");
-        assert_eq!(codec_label("pcmu"), "PCMU");
-        assert_eq!(codec_label("pcma"), "PCMA");
+        assert_eq!(codec_label("PCMU"), Some("PCMU"));
+        assert_eq!(codec_label("pcmu"), Some("PCMU"));
+        assert_eq!(codec_label("pcma"), Some("PCMA"));
     }
 
     #[test]
-    fn codec_label_falls_back_to_other_for_unsupported_names() {
-        assert_eq!(codec_label("speex"), OTHER_CODEC_LABEL);
-        assert_eq!(codec_label("PT101"), OTHER_CODEC_LABEL);
-        assert_eq!(codec_label(""), OTHER_CODEC_LABEL);
+    fn codec_label_is_none_for_unsupported_names() {
+        assert_eq!(codec_label("speex"), None);
+        assert_eq!(codec_label("PT101"), None);
+        assert_eq!(codec_label(""), None);
     }
 
     #[test]
     #[cfg(feature = "opus")]
     fn codec_label_recognizes_opus_when_feature_enabled() {
-        assert_eq!(codec_label("opus"), "opus");
-        assert_eq!(codec_label("Opus"), "opus");
+        assert_eq!(codec_label("opus"), Some("opus"));
+        assert_eq!(codec_label("Opus"), Some("opus"));
     }
 
     #[test]
     #[cfg(not(feature = "opus"))]
-    fn codec_label_falls_back_to_other_for_opus_when_feature_disabled() {
-        assert_eq!(codec_label("opus"), OTHER_CODEC_LABEL);
+    fn codec_label_is_none_for_opus_when_feature_disabled() {
+        assert_eq!(codec_label("opus"), None);
     }
 
     #[test]
     #[cfg(feature = "g722")]
     fn codec_label_recognizes_g722_when_feature_enabled() {
-        assert_eq!(codec_label("g722"), "G722");
-        assert_eq!(codec_label("G722"), "G722");
+        assert_eq!(codec_label("g722"), Some("G722"));
+        assert_eq!(codec_label("G722"), Some("G722"));
     }
 
     #[test]
     #[cfg(not(feature = "g722"))]
-    fn codec_label_falls_back_to_other_for_g722_when_feature_disabled() {
-        assert_eq!(codec_label("G722"), OTHER_CODEC_LABEL);
+    fn codec_label_is_none_for_g722_when_feature_disabled() {
+        assert_eq!(codec_label("G722"), None);
+    }
+
+    #[test]
+    fn codec_label_recognizes_l16() {
+        // Unlike opus/g722, L16 has no feature flag - always recognized.
+        assert_eq!(codec_label("l16"), Some("L16"));
+        assert_eq!(codec_label("L16"), Some("L16"));
     }
 
     /// Histogram sink that records every sample into a shared `Vec`, so a test can assert
@@ -413,7 +411,11 @@ mod tests {
 
     fn make(
         expected: Duration,
-    ) -> (TimingDeviationMetric, Arc<RecordingSink>, Arc<RecordingSink>) {
+    ) -> (
+        TimingDeviationMetric,
+        Arc<RecordingSink>,
+        Arc<RecordingSink>,
+    ) {
         let sink = Arc::new(RecordingSink::default());
         let hist = Histogram::from_arc(sink.clone());
         let summary_sink = Arc::new(RecordingSink::default());

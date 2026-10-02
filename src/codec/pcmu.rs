@@ -6,7 +6,7 @@
 //! Native sample rate: 8kHz
 //! This implementation resamples to/from 48kHz for the internal PCM format.
 
-use super::Codec;
+use super::{Codec, TimestampIncrement};
 use std::sync::OnceLock;
 
 /// PCMU decode table (256 entries, lazy-initialized)
@@ -130,6 +130,11 @@ impl Codec for PcmuCodec {
     fn samples_per_frame(&self) -> usize {
         // 20ms at 48kHz = 960 samples
         960
+    }
+
+    fn rtp_timestamp_increment(&self) -> TimestampIncrement {
+        // 8kHz RTP clock (RFC 3551): 20ms = 160 ticks
+        TimestampIncrement::new(160)
     }
 }
 
