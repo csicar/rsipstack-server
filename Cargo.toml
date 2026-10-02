@@ -16,7 +16,7 @@ path = "examples/echo_server.rs"
 [features]
 default = ["opus"]
 opus = ["dep:opus"]
-g722 = ["dep:audio-codec"]
+g722 = []
 
 [dependencies]
 rsipstack = "0.5.24"
@@ -30,8 +30,9 @@ if-addrs = "0.13"
 rand = "0.8"
 anyhow = "1.0"
 opus = { version = "0.3", optional = true }
-# Only G.722 is used; disable the crate's bundled Opus (we have our own).
-audio-codec = { version = "0.4", default-features = false, features = ["std"], optional = true }
+# Always built and re-exported so downstream shares one pinned version. Only G.722 is
+# used internally; disable the crate's bundled Opus (we have our own).
+audio-codec = { version = "0.4", default-features = false, features = ["std"] }
 metrics = "0.24.6"
 strum = { version = "0.28.0", features = ["derive"] }
 
