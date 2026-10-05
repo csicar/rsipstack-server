@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::deadline::Deadline;
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
-use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer, EXPECTED_SEND_INTERVAL};
+use super::sdp::{generate_sdp_answer, OfferedCodec, SdpOffer, EXPECTED_SEND_INTERVAL};
 use crate::codec::{Codec, CodecInitError, CodecKind};
 use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
@@ -23,7 +23,7 @@ pub struct MediaSession {
     /// Selected payload type
     payload_type: u8,
     /// All codecs offered by the peer
-    offered_codecs: Vec<CodecInfo>,
+    offered_codecs: Vec<OfferedCodec>,
     /// Duration to wait for an RTP packet before closing the call
     media_receive_timeout: Duration,
     /// Session ID for SDP
@@ -349,9 +349,9 @@ mod tests {
         SdpOffer {
             peer_addr,
             peer_port: PeerPort(peer_port),
-            codecs: vec![CodecInfo {
+            codecs: vec![OfferedCodec {
                 payload_type: 0,
-                codec_name: "PCMU".to_string(),
+                kind: CodecKind::Pcmu,
             }],
             payload_type: 0,
             codec_kind: CodecKind::Pcmu,
@@ -365,9 +365,9 @@ mod tests {
         SdpOffer {
             peer_addr,
             peer_port: PeerPort(peer_port),
-            codecs: vec![CodecInfo {
+            codecs: vec![OfferedCodec {
                 payload_type: 97,
-                codec_name: "L16".to_string(),
+                kind: CodecKind::L16,
             }],
             payload_type: 97,
             codec_kind: CodecKind::L16,
@@ -395,13 +395,13 @@ mod tests {
             peer_addr,
             peer_port,
             codecs: vec![
-                CodecInfo {
+                OfferedCodec {
                     payload_type: 111,
-                    codec_name: "opus".to_string(),
+                    kind: CodecKind::Opus,
                 },
-                CodecInfo {
+                OfferedCodec {
                     payload_type: 0,
-                    codec_name: "PCMU".to_string(),
+                    kind: CodecKind::Pcmu,
                 },
             ],
             payload_type: 111,
@@ -437,13 +437,13 @@ mod tests {
             peer_addr,
             peer_port,
             codecs: vec![
-                CodecInfo {
+                OfferedCodec {
                     payload_type: 97,
-                    codec_name: "L16".to_string(),
+                    kind: CodecKind::L16,
                 },
-                CodecInfo {
+                OfferedCodec {
                     payload_type: 0,
-                    codec_name: "PCMU".to_string(),
+                    kind: CodecKind::Pcmu,
                 },
             ],
             payload_type: 97,
