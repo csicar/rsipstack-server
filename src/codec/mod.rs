@@ -64,38 +64,39 @@ pub trait Codec: Send {
     fn rtp_timestamp_increment(&self) -> TimestampIncrement;
 }
 
-/// Create a codec instance based on RTP payload type
+/// Create a codec instance from its SDP codec name (case-insensitive)
 ///
-/// Returns `None` for unsupported payload types.
+/// The name comes from `parse_sdp_offer`, which names the static payload types
+/// (0, 8, 9) itself and takes the rtpmap encoding name for dynamic ones, so no
+/// payload type is needed here.
 ///
-/// # Supported Payload Types
-/// - 0: PCMU (G.711 μ-law)
-/// - 8: PCMA (G.711 A-law)
-/// - 9: G.722 (when "g722" feature is enabled)
-/// - Dynamic types for Opus (when "opus" feature is enabled)
-/// - Dynamic types for L16 (16kHz, mono, always enabled)
-pub fn create_codec(payload_type: u8, codec_name: Option<&str>) -> Option<Box<dyn Codec>> {
-    match payload_type {
-        0 => Some(Box::new(PcmuCodec::new())),
-        8 => Some(Box::new(PcmaCodec::new())),
-        #[cfg(feature = "g722")]
-        9 => Some(Box::new(G722Codec::new())),
-        _ => {
-            // For dynamic payload types, check codec name
-            if let Some(name) = codec_name {
-                #[cfg(feature = "opus")]
-                if name.eq_ignore_ascii_case("opus") {
-                    return OpusCodec::new().ok().map(|c| Box::new(c) as Box<dyn Codec>);
-                };
-
-                if name.eq_ignore_ascii_case("l16") {
-                    return Some(Box::new(L16Codec::new()) as Box<dyn Codec>);
-                };
-            }
-            let _ = codec_name; // Suppress unused warning when opus feature is disabled
-            None
-        }
+/// Returns `None` for unsupported names.
+///
+/// # Supported Names
+/// - `PCMU` (G.711 μ-law)
+/// - `PCMA` (G.711 A-law)
+/// - `G722` (when "g722" feature is enabled)
+/// - `opus` (when "opus" feature is enabled)
+/// - `L16` (16kHz, mono, always enabled)
+pub fn create_codec(codec_name: &str) -> Option<Box<dyn Codec>> {
+    if codec_name.eq_ignore_ascii_case("pcmu") {
+        return Some(Box::new(PcmuCodec::new()));
     }
+    if codec_name.eq_ignore_ascii_case("pcma") {
+        return Some(Box::new(PcmaCodec::new()));
+    }
+    #[cfg(feature = "g722")]
+    if codec_name.eq_ignore_ascii_case("g722") {
+        return Some(Box::new(G722Codec::new()));
+    }
+    #[cfg(feature = "opus")]
+    if codec_name.eq_ignore_ascii_case("opus") {
+        return OpusCodec::new().ok().map(|c| Box::new(c) as Box<dyn Codec>);
+    }
+    if codec_name.eq_ignore_ascii_case("l16") {
+        return Some(Box::new(L16Codec::new()));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -104,38 +105,43 @@ mod tests {
 
     #[test]
     fn test_create_pcmu_codec() {
-        let codec = create_codec(0, None);
+        let codec = create_codec("PCMU");
         assert!(codec.is_some());
         assert_eq!(codec.unwrap().samples_per_frame(), 960);
     }
 
     #[test]
     fn test_create_pcma_codec() {
-        let codec = create_codec(8, None);
+        let codec = create_codec("PCMA");
         assert!(codec.is_some());
         assert_eq!(codec.unwrap().samples_per_frame(), 960);
     }
 
     #[test]
     fn test_create_unknown_codec() {
-        let codec = create_codec(99, None);
-        assert!(codec.is_none());
+        // `parse_sdp_offer` names payload types without an rtpmap `PT<n>`.
+        assert!(create_codec("PT99").is_none());
+        assert!(create_codec("").is_none());
+    }
+
+    #[test]
+    fn test_create_codec_is_case_insensitive() {
+        assert!(create_codec("pcmu").is_some());
+        assert!(create_codec("Pcma").is_some());
+        assert!(create_codec("l16").is_some());
     }
 
     #[cfg(feature = "g722")]
     #[test]
     fn test_create_g722_codec() {
-        // G.722 uses the static payload type 9.
-        let codec = create_codec(9, Some("G722"));
+        let codec = create_codec("G722");
         assert!(codec.is_some());
         assert_eq!(codec.unwrap().samples_per_frame(), 960);
     }
 
     #[test]
     fn test_create_l16_codec() {
-        // L16 has no static payload type; it's always negotiated dynamically
-        // and identified by name.
-        let codec = create_codec(97, Some("L16"));
+        let codec = create_codec("L16");
         assert!(codec.is_some());
         assert_eq!(codec.unwrap().samples_per_frame(), 960);
     }
@@ -144,19 +150,17 @@ mod tests {
     fn test_rtp_timestamp_increment_per_codec() {
         // Per RFC 3551, PCMU/PCMA use an 8kHz clock (160 per 20ms frame).
         assert_eq!(
-            create_codec(0, None).unwrap().rtp_timestamp_increment(),
+            create_codec("PCMU").unwrap().rtp_timestamp_increment(),
             TimestampIncrement::new(160)
         );
         assert_eq!(
-            create_codec(8, None).unwrap().rtp_timestamp_increment(),
+            create_codec("PCMA").unwrap().rtp_timestamp_increment(),
             TimestampIncrement::new(160)
         );
         // L16 at 16kHz rides a dynamic payload type, same as Opus, but has a
         // different clock rate (320 per 20ms, not 960).
         assert_eq!(
-            create_codec(97, Some("L16"))
-                .unwrap()
-                .rtp_timestamp_increment(),
+            create_codec("L16").unwrap().rtp_timestamp_increment(),
             TimestampIncrement::new(320)
         );
     }
@@ -166,9 +170,7 @@ mod tests {
     fn test_rtp_timestamp_increment_g722() {
         // RFC 3551 §4.5.2: G.722 uses an 8kHz RTP clock despite sampling at 16kHz.
         assert_eq!(
-            create_codec(9, Some("G722"))
-                .unwrap()
-                .rtp_timestamp_increment(),
+            create_codec("G722").unwrap().rtp_timestamp_increment(),
             TimestampIncrement::new(160)
         );
     }
@@ -177,9 +179,7 @@ mod tests {
     #[test]
     fn test_rtp_timestamp_increment_opus() {
         assert_eq!(
-            create_codec(96, Some("opus"))
-                .unwrap()
-                .rtp_timestamp_increment(),
+            create_codec("opus").unwrap().rtp_timestamp_increment(),
             TimestampIncrement::new(960)
         );
     }

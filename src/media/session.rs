@@ -93,7 +93,7 @@ impl MediaSession {
         let cancel_token = self.cancel_token.clone();
 
         // Create codec for receiving (decoding)
-        let recv_codec = create_codec(self.payload_type, Some(&self.codec_name));
+        let recv_codec = create_codec(&self.codec_name);
         if recv_codec.is_none() {
             warn!(
                 "No codec for payload type {} ({}), using passthrough",
@@ -102,7 +102,7 @@ impl MediaSession {
         }
 
         // Create codec for sending (encoding)
-        let send_codec = create_codec(self.payload_type, Some(&self.codec_name));
+        let send_codec = create_codec(&self.codec_name);
 
         // Spawn RTP receive task
         let recv_socket = rtp_socket.clone();
