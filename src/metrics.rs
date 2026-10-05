@@ -4,14 +4,14 @@
 //! [`ensure_initialized`] is called by `SipServer::new`, so applications only need to
 //! install a metrics recorder before constructing a server.
 //!
-//! Most labelled metrics get their label values from an enum deriving [`strum::EnumIter`],
-//! so the set of labels is defined exactly once: at the enum. The exception is the `codec`
-//! label on [`CALLS_ACCEPTED_TOTAL`], whose values are derived from
-//! [`sdp::SUPPORTED_CODECS`](crate::media::sdp::SUPPORTED_CODECS) instead - see
-//! [`codec_label`] - so adding a codec there doesn't require a matching edit here.
+//! Labelled metrics get their label values from an enum deriving [`strum::EnumIter`],
+//! so the set of labels is defined exactly once: at the enum. The `codec` label on
+//! [`CALLS_ACCEPTED_TOTAL`] comes from [`CodecKind`], so adding a codec there doesn't
+//! require a matching edit here.
 
 use std::{sync::Once, time::Duration};
 
+use crate::codec::CodecKind;
 use metrics::Histogram;
 use rsipstack::dialog::dialog::TerminatedReason;
 use strum::{EnumIter, IntoEnumIterator, IntoStaticStr};
@@ -40,6 +40,7 @@ pub enum RejectReason {
     RtpPortPoolExhausted,
     UdpConnectFailed,
     NoSupportedCodec,
+    CodecInitFailed,
 }
 
 /// Label values for the `reason` label on [`CALLS_TERMINATED_TOTAL`].
@@ -96,24 +97,13 @@ pub fn calls_rejected(reason: RejectReason) -> metrics::Counter {
     )
 }
 
-/// Resolves `codec_name` to the label value [`calls_accepted`] should use: the canonical
-/// entry from [`sdp::SUPPORTED_CODECS`](crate::media::sdp::SUPPORTED_CODECS) it
-/// case-insensitively matches, or `None` if it matches none. Deriving the label set from
-/// that single list - rather than a hand-maintained enum here - means a codec added there
-/// is automatically counted, with no change needed in this file.
-///
-/// `None` never occurs for a negotiated codec, since SDP negotiation rejects offers with
-/// no supported codec. It is deliberately not mapped to a catch-all label: the name is
-/// arbitrary, peer-controlled text, so it must never be used as a label value directly.
-pub fn codec_label(codec_name: &str) -> Option<&'static str> {
-    crate::media::sdp::canonical_codec_name(codec_name)
-}
-
-pub fn calls_accepted(codec: &'static str) -> metrics::Counter {
+/// The `codec` label value is [`CodecKind::name`], a fixed set of strings. It is never
+/// built from peer-controlled text, so the label cardinality stays bounded.
+pub fn calls_accepted(codec: CodecKind) -> metrics::Counter {
     metrics::counter!(
         description: "Number of successfully accepted SIP calls",
         CALLS_ACCEPTED_TOTAL,
-        "codec" => codec
+        "codec" => codec.name()
     )
 }
 
@@ -313,7 +303,7 @@ pub fn ensure_initialized() {
         for reason in RejectReason::iter() {
             calls_rejected(reason).absolute(0);
         }
-        for codec in crate::media::sdp::SUPPORTED_CODECS.iter().copied() {
+        for codec in CodecKind::iter() {
             calls_accepted(codec).absolute(0);
         }
         calls_active().set(0);
@@ -350,53 +340,6 @@ mod tests {
     use metrics::HistogramFn;
     use std::sync::{Arc, Mutex};
     use tokio::time::advance;
-
-    #[test]
-    fn codec_label_is_case_insensitive_and_canonicalized() {
-        assert_eq!(codec_label("PCMU"), Some("PCMU"));
-        assert_eq!(codec_label("pcmu"), Some("PCMU"));
-        assert_eq!(codec_label("pcma"), Some("PCMA"));
-    }
-
-    #[test]
-    fn codec_label_is_none_for_unsupported_names() {
-        assert_eq!(codec_label("speex"), None);
-        assert_eq!(codec_label("PT101"), None);
-        assert_eq!(codec_label(""), None);
-    }
-
-    #[test]
-    #[cfg(feature = "opus")]
-    fn codec_label_recognizes_opus_when_feature_enabled() {
-        assert_eq!(codec_label("opus"), Some("opus"));
-        assert_eq!(codec_label("Opus"), Some("opus"));
-    }
-
-    #[test]
-    #[cfg(not(feature = "opus"))]
-    fn codec_label_is_none_for_opus_when_feature_disabled() {
-        assert_eq!(codec_label("opus"), None);
-    }
-
-    #[test]
-    #[cfg(feature = "g722")]
-    fn codec_label_recognizes_g722_when_feature_enabled() {
-        assert_eq!(codec_label("g722"), Some("G722"));
-        assert_eq!(codec_label("G722"), Some("G722"));
-    }
-
-    #[test]
-    #[cfg(not(feature = "g722"))]
-    fn codec_label_is_none_for_g722_when_feature_disabled() {
-        assert_eq!(codec_label("G722"), None);
-    }
-
-    #[test]
-    fn codec_label_recognizes_l16() {
-        // Unlike opus/g722, L16 has no feature flag - always recognized.
-        assert_eq!(codec_label("l16"), Some("L16"));
-        assert_eq!(codec_label("L16"), Some("L16"));
-    }
 
     /// Histogram sink that records every sample into a shared `Vec`, so a test can assert
     /// on exactly what `record()` emitted without installing a global metrics recorder.
