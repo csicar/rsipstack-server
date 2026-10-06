@@ -1,7 +1,7 @@
 //! Audio codec implementations
 //!
 //! This module provides codec encoding/decoding for RTP audio.
-//! All codecs normalize audio to 48kHz PCM i16 samples.
+//! All codecs normalize audio to 16kHz PCM i16 samples.
 
 mod l16;
 mod pcma;
@@ -149,10 +149,10 @@ pub trait Codec: Send {
     /// Decode codec payload bytes to PCM i16 samples at 48kHz
     fn decode(&mut self, payload: &[u8]) -> Vec<i16>;
 
-    /// Encode PCM i16 samples at 48kHz to codec payload bytes
+    /// Encode PCM i16 samples at 16kHz to codec payload bytes
     fn encode(&mut self, samples: &[i16]) -> Vec<u8>;
 
-    /// Number of PCM samples per frame at 48kHz (typically 960 for 20ms)
+    /// Number of PCM samples per frame at 16kHz (typically 320 for 20ms)
     fn samples_per_frame(&self) -> usize;
 
     /// RTP timestamp advance per 20ms frame, i.e. 20ms at the codec's RTP clock rate.
@@ -212,7 +212,12 @@ mod tests {
     fn created_codecs_have_the_internal_frame_size() {
         for kind in CodecKind::iter() {
             let codec = kind.create().unwrap();
-            assert_eq!(codec.samples_per_frame(), 960, "{}", kind.name());
+            assert_eq!(
+                codec.samples_per_frame(),
+                crate::SAMPLES_PER_FRAME,
+                "{}",
+                kind.name()
+            );
         }
     }
 

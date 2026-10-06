@@ -5,6 +5,12 @@ use std::time::Duration;
 
 use crate::codec::CodecKind;
 
+/// Sample rate of the PCM audio in `AudioFrame` and the `Codec` trait.
+pub const SAMPLE_RATE_HZ: u32 = 16_000;
+
+/// PCM samples in one 20ms `AudioFrame` (320 at 16kHz).
+pub const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE_HZ as usize * 20) / 1000;
+
 /// A codec from the peer's offer that we support, with the payload type the
 /// peer uses for it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
