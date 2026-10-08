@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use super::deadline::Deadline;
 use super::rtp::{build_rtp_packet, parse_rtp_packet, AudioFrame, RtpSendState};
-use super::sdp::{generate_sdp_answer, CodecInfo, SdpOffer, EXPECTED_SEND_INTERVAL};
-use crate::codec::{create_codec, Codec, TimestampIncrement};
+use super::sdp::{generate_sdp_answer, OfferedCodec, SdpOffer, EXPECTED_SEND_INTERVAL};
+use crate::codec::{Codec, CodecInitError, CodecKind};
 use crate::media::rtp::ConnectedSocketPair;
 use crate::media::sdp::AdvertiseIpAddr;
 use crate::metrics;
@@ -13,10 +13,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
-
-/// RTP timestamp advance per 20ms frame at the 48kHz internal rate, used when no
-/// codec could be created for the negotiated payload type.
-const PASSTHROUGH_TIMESTAMP_INCREMENT: TimestampIncrement = TimestampIncrement::new(960);
 
 /// Media session for handling RTP audio
 pub struct MediaSession {
@@ -26,16 +22,20 @@ pub struct MediaSession {
     rtp_socket_pair: ConnectedSocketPair,
     /// Selected payload type
     payload_type: u8,
-    /// Codec name (for dynamic payload types)
-    codec_name: String,
     /// All codecs offered by the peer
-    offered_codecs: Vec<CodecInfo>,
+    offered_codecs: Vec<OfferedCodec>,
     /// Duration to wait for an RTP packet before closing the call
     media_receive_timeout: Duration,
     /// Session ID for SDP
     session_id: u64,
     /// Cancellation token
     cancel_token: CancellationToken,
+    /// Decoder for incoming RTP payloads, of the codec selected from the peer's offer
+    recv_codec: Box<dyn Codec>,
+    /// Encoder for outgoing RTP payloads. A separate instance from `recv_codec`,
+    /// because encoders and decoders keep state and can't be shared between the
+    /// receive and send tasks.
+    send_codec: Box<dyn Codec>,
 }
 
 impl MediaSession {
@@ -45,21 +45,24 @@ impl MediaSession {
         offer: &SdpOffer,
         cancel_token: CancellationToken,
         media_receive_timeout: Duration,
-    ) -> Self {
+    ) -> Result<Self, CodecInitError> {
         // Bind RTP socket to local interface
 
         let session_id = rand::random::<u64>();
+        let recv_codec = CodecKind::create(offer.codec_kind)?;
+        let send_codec = CodecKind::create(offer.codec_kind)?;
 
-        Self {
+        Ok(Self {
             advertise_ip_addr,
             rtp_socket_pair,
             payload_type: offer.payload_type,
-            codec_name: offer.codec_name.clone(),
             offered_codecs: offer.codecs.clone(),
+            recv_codec,
+            send_codec,
             media_receive_timeout,
             session_id,
             cancel_token,
-        }
+        })
     }
 
     /// Generate SDP answer for this session
@@ -92,21 +95,12 @@ impl MediaSession {
         let rtp_socket = std::sync::Arc::new(self.rtp_socket_pair.rtp_socket());
         let cancel_token = self.cancel_token.clone();
 
-        // Create codec for receiving (decoding)
-        let recv_codec = create_codec(self.payload_type, Some(&self.codec_name));
-        if recv_codec.is_none() {
-            warn!(
-                "No codec for payload type {} ({}), using passthrough",
-                self.payload_type, self.codec_name
-            );
-        }
-
-        // Create codec for sending (encoding)
-        let send_codec = create_codec(self.payload_type, Some(&self.codec_name));
-
         // Spawn RTP receive task
         let recv_socket = rtp_socket.clone();
         let recv_cancel = cancel_token.clone();
+        let recv_codec = self.recv_codec;
+        let send_codec = self.send_codec;
+
         tokio::spawn(async move {
             Self::rtp_receive_task(
                 recv_socket,
@@ -141,7 +135,7 @@ impl MediaSession {
         socket: std::sync::Arc<UdpSocket>,
         audio_tx: mpsc::UnboundedSender<AudioFrame>,
         cancel_token: CancellationToken,
-        mut codec: Option<Box<dyn Codec>>,
+        mut codec: Box<dyn Codec>,
         media_receive_timeout: Duration,
     ) {
         let mut buf = vec![0u8; 2048];
@@ -185,12 +179,7 @@ impl MediaSession {
                                 deadline.reset();
 
                                 // Decode the payload using codec
-                                let samples = if let Some(ref mut c) = codec {
-                                    c.decode(&raw.payload)
-                                } else {
-                                    // Passthrough: interpret bytes as samples (for testing)
-                                    raw.payload.iter().map(|&b| (b as i16 - 128) * 256).collect()
-                                };
+                                let samples = codec.decode(&raw.payload);
 
                                 let frame = AudioFrame { samples };
 
@@ -217,15 +206,11 @@ impl MediaSession {
         socket: std::sync::Arc<UdpSocket>,
         mut audio_rx: mpsc::UnboundedReceiver<AudioFrame>,
         cancel_token: CancellationToken,
-        mut codec: Option<Box<dyn Codec>>,
+        mut codec: Box<dyn Codec>,
         payload_type: u8,
     ) {
         let mut packet_count = 0u64;
-        // Without a codec we send passthrough at the 48kHz internal rate.
-        let timestamp_increment = codec.as_ref().map_or(PASSTHROUGH_TIMESTAMP_INCREMENT, |c| {
-            c.rtp_timestamp_increment()
-        });
-        let mut rtp_state = RtpSendState::new(payload_type, timestamp_increment);
+        let mut rtp_state = RtpSendState::new(payload_type, codec.rtp_timestamp_increment());
         let mut rtp_send_timing_deviation_metric =
             metrics::rtp_send_timing_deviation(EXPECTED_SEND_INTERVAL.duration());
 
@@ -239,12 +224,7 @@ impl MediaSession {
                     match frame {
                         Some(frame) => {
                             // Encode the samples using codec
-                            let payload = if let Some(ref mut c) = codec {
-                                c.encode(&frame.samples)
-                            } else {
-                                // Passthrough: convert samples back to bytes (for testing)
-                                frame.samples.iter().map(|&s| ((s / 256) + 128) as u8).collect()
-                            };
+                            let payload = codec.encode(&frame.samples);
 
                             // Skip empty payloads (codec error)
                             if payload.is_empty() {
@@ -293,6 +273,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use crate::{
+        codec::TimestampIncrement,
         media::{
             rtp::{try_allocate_socket_pair, RtpPortRange, RtpSendState},
             sdp::{PeerIpAddr, PeerPort},
@@ -350,7 +331,8 @@ mod tests {
             offer,
             cancel_token.clone(),
             timeout,
-        );
+        )
+        .unwrap();
 
         TestSetup {
             session,
@@ -367,12 +349,12 @@ mod tests {
         SdpOffer {
             peer_addr,
             peer_port: PeerPort(peer_port),
-            codecs: vec![CodecInfo {
+            codecs: vec![OfferedCodec {
                 payload_type: 0,
-                codec_name: "PCMU".to_string(),
+                kind: CodecKind::Pcmu,
             }],
             payload_type: 0,
-            codec_name: "PCMU".to_string(),
+            codec_kind: CodecKind::Pcmu,
         }
     }
 
@@ -383,12 +365,12 @@ mod tests {
         SdpOffer {
             peer_addr,
             peer_port: PeerPort(peer_port),
-            codecs: vec![CodecInfo {
+            codecs: vec![OfferedCodec {
                 payload_type: 97,
-                codec_name: "L16".to_string(),
+                kind: CodecKind::L16,
             }],
             payload_type: 97,
-            codec_name: "L16".to_string(),
+            codec_kind: CodecKind::L16,
         }
     }
 
@@ -413,17 +395,17 @@ mod tests {
             peer_addr,
             peer_port,
             codecs: vec![
-                CodecInfo {
+                OfferedCodec {
                     payload_type: 111,
-                    codec_name: "opus".to_string(),
+                    kind: CodecKind::Opus,
                 },
-                CodecInfo {
+                OfferedCodec {
                     payload_type: 0,
-                    codec_name: "PCMU".to_string(),
+                    kind: CodecKind::Pcmu,
                 },
             ],
             payload_type: 111,
-            codec_name: "opus".to_string(),
+            codec_kind: CodecKind::Opus,
         };
 
         let setup = setup_test_session(&offer, Duration::MAX).await;
@@ -455,17 +437,17 @@ mod tests {
             peer_addr,
             peer_port,
             codecs: vec![
-                CodecInfo {
+                OfferedCodec {
                     payload_type: 97,
-                    codec_name: "L16".to_string(),
+                    kind: CodecKind::L16,
                 },
-                CodecInfo {
+                OfferedCodec {
                     payload_type: 0,
-                    codec_name: "PCMU".to_string(),
+                    kind: CodecKind::Pcmu,
                 },
             ],
             payload_type: 97,
-            codec_name: "L16".to_string(),
+            codec_kind: CodecKind::L16,
         };
 
         let setup = setup_test_session(&offer, Duration::MAX).await;

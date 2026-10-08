@@ -10,14 +10,11 @@
 //! its `a=rtpmap` name rather than a fixed number.
 //!
 //! Native sample rate: 16kHz, mono.
-//! This implementation resamples to/from 48kHz for the internal PCM format,
-//! using a 3x factor (16kHz * 3 = 48kHz), the same approach as G.722.
+//! No resampling is needed: the internal PCM format is also 16kHz mono.
 
 use super::{Codec, TimestampIncrement};
 
 pub struct L16Codec;
-
-const RESAMPLE_FACTOR: usize = 3;
 
 impl L16Codec {
     pub fn new() -> Self {
@@ -33,31 +30,24 @@ impl Default for L16Codec {
 
 impl Codec for L16Codec {
     fn decode(&mut self, payload: &[u8]) -> Vec<i16> {
-        let chunks: std::slice::ChunksExact<'_, u8> = payload.chunks_exact(2);
-        let mut samples = Vec::with_capacity(chunks.len() * RESAMPLE_FACTOR);
-        for chunk in chunks {
-            let sample = i16::from_be_bytes(
-                chunk
-                    .try_into()
-                    .expect("chunks_exact(2) guarantees len == 2"),
-            );
-            for _ in 0..RESAMPLE_FACTOR {
-                samples.push(sample);
-            }
-        }
-        samples
+        payload
+            .chunks_exact(2)
+            .map(|chunk| {
+                i16::from_be_bytes(
+                    chunk
+                        .try_into()
+                        .expect("chunks_exact(2) guarantees len == 2"),
+                )
+            })
+            .collect()
     }
 
     fn encode(&mut self, samples: &[i16]) -> Vec<u8> {
-        let mut l16_16k: Vec<u8> = Vec::with_capacity(samples.len().div_ceil(RESAMPLE_FACTOR) * 2);
-        for chunk in samples.chunks(RESAMPLE_FACTOR) {
-            l16_16k.extend(chunk[chunk.len() / 2].to_be_bytes());
-        }
-        l16_16k
+        samples.iter().flat_map(|s| s.to_be_bytes()).collect()
     }
 
     fn samples_per_frame(&self) -> usize {
-        960
+        crate::SAMPLES_PER_FRAME
     }
 
     fn rtp_timestamp_increment(&self) -> TimestampIncrement {
@@ -69,21 +59,21 @@ impl Codec for L16Codec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SAMPLES_PER_FRAME;
 
     #[test]
     fn test_frame_sizes() {
         let mut codec = L16Codec;
 
-        // A 20ms frame at 48kHz = 960 samples.
-        let frame = vec![0i16; 960];
+        // A 20ms frame at 16kHz = 320 samples.
+        let frame = vec![0i16; SAMPLES_PER_FRAME];
         let encoded = codec.encode(&frame);
-        // 960 / 3 = 320 samples at 16kHz; L16 is uncompressed, so each
-        // sample is 2 bytes (unlike G722's ~1 byte per 2 samples).
-        assert_eq!(encoded.len(), 640);
+        // L16 is uncompressed, so each sample is 2 bytes (unlike G722's ~1 byte
+        // per 2 samples).
+        assert_eq!(encoded.len(), SAMPLES_PER_FRAME * 2);
 
         let decoded = codec.decode(&encoded);
-        // 640 bytes -> 320 samples at 16kHz -> 960 samples at 48kHz.
-        assert_eq!(decoded.len(), 960);
+        assert_eq!(decoded.len(), SAMPLES_PER_FRAME);
     }
 
     #[test]
@@ -92,10 +82,10 @@ mod tests {
 
         // L16 has no lossy compression step (unlike G722's ADPCM), so
         // silence round-trips to exact silence, not just "near" silence.
-        let encoded = codec.encode(&vec![0i16; 960]);
+        let encoded = codec.encode(&vec![0i16; SAMPLES_PER_FRAME]);
         let decoded = codec.decode(&encoded);
 
-        assert_eq!(decoded.len(), 960);
+        assert_eq!(decoded.len(), SAMPLES_PER_FRAME);
         assert!(decoded.iter().all(|&s| s == 0));
     }
 
@@ -103,10 +93,10 @@ mod tests {
     fn test_encode_silence() {
         let mut codec = L16Codec;
 
-        let silence = vec![0i16; 960];
+        let silence = vec![0i16; SAMPLES_PER_FRAME];
         let encoded = codec.encode(&silence);
 
-        assert_eq!(encoded.len(), 640);
+        assert_eq!(encoded.len(), SAMPLES_PER_FRAME * 2);
         assert!(encoded.iter().all(|&b| b == 0));
     }
 
@@ -114,22 +104,15 @@ mod tests {
     fn test_decode_encode_roundtrip() {
         let mut codec = L16Codec;
 
-        // Build a 48kHz frame that's already "triplicated", i.e. exactly
-        // what decode() produces: each 16kHz sample repeated 3x. Since L16
-        // has no compression step, encoding then decoding such a frame is
-        // lossless and must reproduce it exactly (the only lossy part of
-        // this codec is the 48kHz<->16kHz resampling itself, which this
-        // input doesn't exercise since it's already piecewise-constant in
-        // groups of 3).
-        let sixteen_khz: Vec<i16> = (0..320).map(|i| ((i * 97) % 30000) - 15000).collect();
-        let original: Vec<i16> = sixteen_khz
-            .iter()
-            .flat_map(|&s| std::iter::repeat_n(s, RESAMPLE_FACTOR))
+        // L16 has no compression step and no resampling, so encoding then
+        // decoding any frame is lossless and must reproduce it exactly.
+        let original: Vec<i16> = (0..SAMPLES_PER_FRAME as i16)
+            .map(|i| ((i * 97) % 30000) - 15000)
             .collect();
-        assert_eq!(original.len(), 960);
+        assert_eq!(original.len(), SAMPLES_PER_FRAME);
 
         let encoded = codec.encode(&original);
-        assert_eq!(encoded.len(), 640);
+        assert_eq!(encoded.len(), SAMPLES_PER_FRAME * 2);
 
         let decoded = codec.decode(&encoded);
         assert_eq!(decoded, original);
@@ -142,17 +125,26 @@ mod tests {
         // RFC 3551 requires L16 samples in network byte order (big-endian):
         // 0x0001 must decode to 1, not 256 (which would be little-endian).
         let decoded = codec.decode(&[0x00, 0x01]);
-        assert_eq!(decoded[0], 1);
+        assert_eq!(decoded, vec![1]);
 
         // And the inverse: encoding should put the high byte first.
-        let one_sample_16khz = vec![1i16; RESAMPLE_FACTOR];
-        let encoded = codec.encode(&one_sample_16khz);
+        let encoded = codec.encode(&[1i16]);
         assert_eq!(encoded, vec![0x00, 0x01]);
+    }
+
+    #[test]
+    fn test_decode_ignores_trailing_odd_byte() {
+        let mut codec = L16Codec;
+
+        // A truncated payload must not panic: the incomplete last sample is dropped.
+        let decoded = codec.decode(&[0x00, 0x01, 0xFF]);
+        assert_eq!(decoded, vec![1]);
     }
 
     #[test]
     fn test_samples_per_frame() {
         let codec = L16Codec;
-        assert_eq!(codec.samples_per_frame(), 960);
+        assert_eq!(codec.samples_per_frame(), SAMPLES_PER_FRAME);
+        assert_eq!(codec.samples_per_frame(), 320);
     }
 }
