@@ -214,6 +214,7 @@ impl MediaSession {
         let mut rtp_send_timing_deviation_metric =
             metrics::rtp_send_timing_deviation(EXPECTED_SEND_INTERVAL.duration());
 
+        let packets_sent = metrics::rtp_packets_sent();
         loop {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
@@ -239,7 +240,7 @@ impl MediaSession {
                                 Ok(_) => {
                                     packet_count += 1;
                                     rtp_send_timing_deviation_metric.record();
-                                    metrics::rtp_packets_sent().increment(1);
+                                    packets_sent.increment(1);
                                     if packet_count % 500 == 1 {
                                         debug!(
                                             count = packet_count,

@@ -162,6 +162,12 @@ pub fn drain_active() -> metrics::Gauge {
     )
 }
 
+/// Counter handle for successfully sent RTP packets.
+///
+/// Call this once (for example when a send task starts) and keep the returned handle.
+/// Every call re-describes the metric, which allocates and takes the recorder's global
+/// lock, and then looks it up in the registry: too much work to repeat for each packet.
+/// Incrementing the saved handle is a single atomic add.
 pub fn rtp_packets_sent() -> metrics::Counter {
     metrics::counter!(
         description: "Number of RTP packets successfully sent",
