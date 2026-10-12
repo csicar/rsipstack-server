@@ -1,14 +1,17 @@
 //! Opus codec implementation
 //!
 //! Opus is a modern audio codec designed for interactive real-time applications.
-//! It natively supports 48kHz sample rate, so no resampling is needed.
+//! It supports 16kHz directly, so the encoder and decoder run at the internal
+//! PCM rate and no resampling is needed here. Only the RTP clock stays at 48kHz
+//! (RFC 7587), independent of the sample rate, see `rtp_timestamp_increment`.
 //!
 //! This implementation uses the `opus` crate for encoding/decoding.
 
 use super::{Codec, TimestampIncrement};
+use crate::{SAMPLES_PER_FRAME, SAMPLE_RATE_HZ};
 use opus::{Channels, Decoder, Encoder};
 
-/// Opus codec for 48kHz mono audio
+/// Opus codec for 16kHz mono audio
 pub struct OpusCodec {
     encoder: Encoder,
     decoder: Decoder,
@@ -19,9 +22,9 @@ impl OpusCodec {
     ///
     /// Returns an error if the opus encoder/decoder cannot be initialized.
     pub fn new() -> Result<Self, opus::Error> {
-        // 48kHz mono for VoIP applications
-        let encoder = Encoder::new(48000, Channels::Mono, opus::Application::Voip)?;
-        let decoder = Decoder::new(48000, Channels::Mono)?;
+        // 16kHz mono for VoIP applications
+        let encoder = Encoder::new(SAMPLE_RATE_HZ, Channels::Mono, opus::Application::Voip)?;
+        let decoder = Decoder::new(SAMPLE_RATE_HZ, Channels::Mono)?;
 
         Ok(Self { encoder, decoder })
     }
@@ -29,8 +32,8 @@ impl OpusCodec {
 
 impl Codec for OpusCodec {
     fn decode(&mut self, payload: &[u8]) -> Vec<i16> {
-        // Opus frames are typically 20ms = 960 samples at 48kHz
-        let mut output = vec![0i16; 960];
+        // Opus frames are typically 20ms = 320 samples at 16kHz
+        let mut output = vec![0i16; SAMPLES_PER_FRAME];
 
         match self.decoder.decode(payload, &mut output, false) {
             Ok(samples) => {
@@ -40,7 +43,7 @@ impl Codec for OpusCodec {
             Err(e) => {
                 tracing::warn!("Opus decode error: {}", e);
                 // Return silence on error
-                vec![0i16; 960]
+                vec![0i16; SAMPLES_PER_FRAME]
             }
         }
     }
@@ -63,12 +66,12 @@ impl Codec for OpusCodec {
     }
 
     fn samples_per_frame(&self) -> usize {
-        // 20ms at 48kHz = 960 samples
-        960
+        SAMPLES_PER_FRAME
     }
 
     fn rtp_timestamp_increment(&self) -> TimestampIncrement {
-        // 48kHz RTP clock: 20ms = 960 ticks
+        // The RTP clock is 48kHz (RFC 7587) whatever rate the codec runs at:
+        // 20ms = 960 ticks
         TimestampIncrement::new(960)
     }
 }
@@ -88,7 +91,7 @@ mod tests {
         let mut codec = OpusCodec::new().unwrap();
 
         // Generate a simple test signal (sine wave)
-        let samples: Vec<i16> = (0..960)
+        let samples: Vec<i16> = (0..SAMPLES_PER_FRAME)
             .map(|i| ((i as f32 * 0.1).sin() * 10000.0) as i16)
             .collect();
 
@@ -96,7 +99,12 @@ mod tests {
         assert!(!encoded.is_empty(), "Encoded data should not be empty");
 
         let decoded = codec.decode(&encoded);
-        assert_eq!(decoded.len(), 960, "Decoded frame should have 960 samples");
+        assert_eq!(
+            decoded.len(),
+            SAMPLES_PER_FRAME,
+            "Decoded frame should have {} samples",
+            SAMPLES_PER_FRAME
+        );
 
         // Opus is lossy, so we just check the signal is reasonable
         // (not silent and within range)
@@ -108,11 +116,11 @@ mod tests {
     fn test_opus_decode_silence() {
         let mut codec = OpusCodec::new().unwrap();
 
-        let silence = vec![0i16; 960];
+        let silence = vec![0i16; SAMPLES_PER_FRAME];
         let encoded = codec.encode(&silence);
 
         let decoded = codec.decode(&encoded);
-        assert_eq!(decoded.len(), 960);
+        assert_eq!(decoded.len(), SAMPLES_PER_FRAME);
 
         // Should be near-silent
         let max_sample = decoded.iter().map(|s| s.abs()).max().unwrap_or(0);
@@ -126,6 +134,7 @@ mod tests {
     #[test]
     fn test_samples_per_frame() {
         let codec = OpusCodec::new().unwrap();
-        assert_eq!(codec.samples_per_frame(), 960);
+        assert_eq!(codec.samples_per_frame(), SAMPLES_PER_FRAME);
+        assert_eq!(codec.samples_per_frame(), 320);
     }
 }

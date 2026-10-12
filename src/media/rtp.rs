@@ -15,12 +15,12 @@ use crate::{codec::TimestampIncrement, media::PeerSocketAddr, metrics, server::L
 
 /// Represents an audio frame with decoded PCM samples
 ///
-/// Contains decoded PCM samples at 48kHz, 960 samples per frame (20ms).
+/// Contains decoded PCM samples at 16kHz, 320 samples per frame (20ms).
 /// All RTP details (timestamps, sequence numbers, SSRC) are handled
 /// internally by the library.
 #[derive(Debug, Clone)]
 pub struct AudioFrame {
-    /// Decoded PCM samples at 48kHz, 960 samples per frame (20ms)
+    /// Decoded PCM samples at 16kHz, 320 samples per frame (20ms)
     pub samples: Vec<i16>,
 }
 

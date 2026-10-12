@@ -4,10 +4,15 @@
 //! 14-bit linear PCM samples to 8-bit values using logarithmic encoding.
 //!
 //! Native sample rate: 8kHz
-//! This implementation resamples to/from 48kHz for the internal PCM format.
+//! This implementation resamples to/from 16kHz for the internal PCM format,
+//! using a 2x factor (8kHz * 2 = 16kHz).
 
 use super::{Codec, TimestampIncrement};
+use crate::SAMPLES_PER_FRAME;
 use std::sync::OnceLock;
+
+/// Upsample/downsample factor between the 8kHz wire format and the internal 16kHz.
+const RESAMPLE_FACTOR: usize = 2;
 
 /// PCMU decode table (256 entries, lazy-initialized)
 static DECODE_TABLE: OnceLock<[i16; 256]> = OnceLock::new();
@@ -100,13 +105,13 @@ impl Default for PcmuCodec {
 
 impl Codec for PcmuCodec {
     fn decode(&mut self, payload: &[u8]) -> Vec<i16> {
-        // Each byte becomes one 8kHz sample, which we upsample 6x to 48kHz
-        let mut samples = Vec::with_capacity(payload.len() * 6);
+        // Each byte becomes one 8kHz sample, which we upsample 2x to 16kHz
+        let mut samples = Vec::with_capacity(payload.len() * RESAMPLE_FACTOR);
 
         for &byte in payload {
             let sample = self.decode_table[byte as usize];
-            // Simple 6x upsampling by sample duplication
-            for _ in 0..6 {
+            // Simple 2x upsampling by sample duplication
+            for _ in 0..RESAMPLE_FACTOR {
                 samples.push(sample);
             }
         }
@@ -115,10 +120,10 @@ impl Codec for PcmuCodec {
     }
 
     fn encode(&mut self, samples: &[i16]) -> Vec<u8> {
-        // Downsample from 48kHz to 8kHz (take every 6th sample)
-        let mut payload = Vec::with_capacity(samples.len().div_ceil(6));
+        // Downsample from 16kHz to 8kHz (take one sample of every 2)
+        let mut payload = Vec::with_capacity(samples.len().div_ceil(RESAMPLE_FACTOR));
 
-        for chunk in samples.chunks(6) {
+        for chunk in samples.chunks(RESAMPLE_FACTOR) {
             // Use the middle sample for better quality
             let sample = chunk[chunk.len() / 2];
             payload.push(encode_ulaw_sample(sample));
@@ -128,8 +133,7 @@ impl Codec for PcmuCodec {
     }
 
     fn samples_per_frame(&self) -> usize {
-        // 20ms at 48kHz = 960 samples
-        960
+        SAMPLES_PER_FRAME
     }
 
     fn rtp_timestamp_increment(&self) -> TimestampIncrement {
@@ -150,8 +154,8 @@ mod tests {
         let original: Vec<u8> = (0..160).map(|i| (i * 17) as u8).collect();
 
         let decoded = codec.decode(&original);
-        // 160 bytes * 6 = 960 samples at 48kHz
-        assert_eq!(decoded.len(), 960);
+        // 160 bytes * 2 = 320 samples at 16kHz
+        assert_eq!(decoded.len(), SAMPLES_PER_FRAME);
 
         let encoded = codec.encode(&decoded);
         // Should get 160 bytes back
@@ -163,10 +167,10 @@ mod tests {
         let mut codec2 = PcmuCodec::new();
         let redecoded = codec2.decode(&encoded);
 
-        // Compare every 6th sample (matching the original 8kHz rate)
+        // Compare every 2nd sample (matching the original 8kHz rate)
         for i in 0..160 {
-            let orig_sample = decoded[i * 6];
-            let new_sample = redecoded[i * 6];
+            let orig_sample = decoded[i * RESAMPLE_FACTOR];
+            let new_sample = redecoded[i * RESAMPLE_FACTOR];
             let diff = (orig_sample as i32 - new_sample as i32).abs();
             // μ-law has about 14-bit dynamic range, allow some quantization error
             assert!(
@@ -187,7 +191,7 @@ mod tests {
         let silence = vec![0xFF; 160];
         let decoded = codec.decode(&silence);
 
-        assert_eq!(decoded.len(), 960);
+        assert_eq!(decoded.len(), SAMPLES_PER_FRAME);
         // All samples should be very close to 0
         for sample in decoded {
             assert!(sample.abs() < 10, "Expected near-silence, got {}", sample);
@@ -198,7 +202,7 @@ mod tests {
     fn test_encode_silence() {
         let mut codec = PcmuCodec::new();
 
-        let silence = vec![0i16; 960];
+        let silence = vec![0i16; SAMPLES_PER_FRAME];
         let encoded = codec.encode(&silence);
 
         assert_eq!(encoded.len(), 160);
@@ -211,7 +215,8 @@ mod tests {
     #[test]
     fn test_samples_per_frame() {
         let codec = PcmuCodec::new();
-        assert_eq!(codec.samples_per_frame(), 960);
+        assert_eq!(codec.samples_per_frame(), SAMPLES_PER_FRAME);
+        assert_eq!(codec.samples_per_frame(), 320);
     }
 
     #[test]

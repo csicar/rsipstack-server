@@ -92,13 +92,24 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
             }
         };
 
-        let media_session = MediaSession::new(
+        let media_session = match MediaSession::new(
             connected_socket_pair,
             self.state.media_ip(),
             &offer,
             self.dialog.cancel_token().child_token(),
             self.state.media_receive_timeout,
-        );
+        ) {
+            Ok(session) => session,
+            Err(e) => {
+                warn!(dialog_id = %dialog_id, error = %e, "Unable to create codec");
+                metrics::calls_rejected(RejectReason::CodecInitFailed).increment(1);
+                self.dialog.reject(
+                    Some(rsip::StatusCode::ServerInternalError),
+                    Some("Unable to create codec".to_string()),
+                )?;
+                return Ok(());
+            }
+        };
 
         // Generate SDP answer
         let sdp_answer = media_session.generate_sdp_answer();
@@ -121,15 +132,7 @@ impl<H: AudioHandler + 'static> CallHandler<H> {
 
         info!(dialog_id = %dialog_id, "Call accepted, starting audio handler");
         let _active_calls_guard = ScopedGauge::new(metrics::calls_active());
-        // Negotiation guarantees a supported codec, so a label is always found.
-        match metrics::codec_label(&offer.codec_name) {
-            Some(codec) => metrics::calls_accepted(codec).increment(1),
-            None => warn!(
-                dialog_id = %dialog_id,
-                codec = %offer.codec_name,
-                "Accepted call with a codec that has no metric label; not counted in calls_accepted"
-            ),
-        }
+        metrics::calls_accepted(offer.codec_kind).increment(1);
 
         // Start the media session and audio handler
         let (audio_in, audio_out) = media_session.start().await;

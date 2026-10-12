@@ -57,7 +57,10 @@ mod server;
 // Re-export public API
 pub use audio::handler::{AudioHandler, SipHeaders};
 pub use media::rtp::AudioFrame;
-pub use media::sdp::{AdvertiseIpAddr, ExpectedSendInterval, EXPECTED_SEND_INTERVAL};
+pub use media::sdp::{
+    AdvertiseIpAddr, ExpectedSendInterval, EXPECTED_SEND_INTERVAL, SAMPLES_PER_FRAME,
+    SAMPLE_RATE_HZ,
+};
 pub use metrics::TimingDeviationMetric;
 pub use server::{ServerConfig, ServerState, SipServer};
 
