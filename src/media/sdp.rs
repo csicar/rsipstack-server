@@ -55,7 +55,7 @@ impl std::fmt::Display for PeerIpAddr {
 pub struct SdpOffer {
     pub peer_addr: PeerIpAddr,
     pub peer_port: PeerPort,
-    /// The offered codecs we support, in the peer's order of preference
+    /// The offered codecs we support, in our order of preference
     pub codecs: Vec<OfferedCodec>,
     /// Payload type of the selected codec (the first one in `codecs`)
     pub payload_type: u8,
@@ -65,7 +65,7 @@ pub struct SdpOffer {
 
 /// Parse an SDP offer and extract relevant information
 ///
-/// Selects the first offered codec we support, respecting the caller's preference order.
+/// Selects the offered codec we support that ranks first in `CodecKind`'s preference order.
 /// Returns [`SdpParseError::NoSupportedCodec`] if none of the offered codecs are supported,
 /// so the caller can reject the call instead of answering with an empty codec list.
 pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
@@ -135,7 +135,11 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
         }
     }
 
-    // Select the first codec we support (respecting client's preference order)
+    // Order by our own preference (`CodecKind` declaration order). The sort is
+    // stable, so entries of the same kind keep the peer's relative order.
+    codecs.sort_by_key(|c| c.kind);
+
+    // Select the most preferred codec we support
     let selected = *codecs.first().ok_or(SdpParseError::NoSupportedCodec)?;
 
     Ok(SdpOffer {
@@ -481,17 +485,38 @@ mod tests {
             payload_type: 9,
             kind: CodecKind::G722,
         });
+        // Sorted by our preference, not the peer's: PCMU ranks ahead of PCMA
         expected.extend([
-            OfferedCodec {
-                payload_type: 8,
-                kind: CodecKind::Pcma,
-            },
             OfferedCodec {
                 payload_type: 0,
                 kind: CodecKind::Pcmu,
             },
+            OfferedCodec {
+                payload_type: 8,
+                kind: CodecKind::Pcma,
+            },
         ]);
         assert_eq!(offer.codecs, expected);
+    }
+
+    #[test]
+    fn test_l16_preferred_over_opus_listed_first() {
+        // The peer lists opus first, but we rank L16 higher, so L16 is selected
+        // and listed first in the codecs we answer with.
+        let sdp = "v=0\n\
+                   o=- 1 1 IN IP4 12.22.0.39\n\
+                   s=-\n\
+                   t=0 0\n\
+                   m=audio 5000 RTP/AVP 111 97 0\n\
+                   c=IN IP4 12.22.0.39\n\
+                   a=rtpmap:111 opus/48000/2\n\
+                   a=rtpmap:97 L16/16000\n\
+                   a=rtpmap:0 PCMU/8000\n";
+
+        let offer = parse_sdp_offer(sdp).unwrap();
+        assert_eq!(offer.payload_type, 97);
+        assert_eq!(offer.codec_kind, CodecKind::L16);
+        assert_eq!(offer.codecs.first().map(|c| c.payload_type), Some(97));
     }
 
     #[cfg(feature = "g722")]
