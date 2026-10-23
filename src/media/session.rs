@@ -20,10 +20,8 @@ pub struct MediaSession {
     advertise_ip_addr: AdvertiseIpAddr,
     /// Connected RTP/RTCP port sockets
     rtp_socket_pair: ConnectedSocketPair,
-    /// Selected payload type
-    payload_type: u8,
-    /// All codecs offered by the peer
-    offered_codecs: Vec<OfferedCodec>,
+    /// The codec selected from the peer's offer, and the only one we answer with
+    selected_codec: OfferedCodec,
     /// Duration to wait for an RTP packet before closing the call
     media_receive_timeout: Duration,
     /// Session ID for SDP
@@ -55,8 +53,10 @@ impl MediaSession {
         Ok(Self {
             advertise_ip_addr,
             rtp_socket_pair,
-            payload_type: offer.payload_type,
-            offered_codecs: offer.codecs.clone(),
+            selected_codec: OfferedCodec {
+                payload_type: offer.payload_type,
+                kind: offer.codec_kind,
+            },
             recv_codec,
             send_codec,
             media_receive_timeout,
@@ -67,14 +67,15 @@ impl MediaSession {
 
     /// Generate SDP answer for this session
     ///
-    /// The answer only includes codecs that were both offered by the peer
-    /// and supported by us. Uses the advertise_ip for the connection address.
+    /// The answer names only the selected codec, so the peer cannot send
+    /// anything this session does not decode. Uses the advertise_ip for the
+    /// connection address.
     pub fn generate_sdp_answer(&self) -> String {
         generate_sdp_answer(
             self.advertise_ip_addr,
             self.rtp_socket_pair.ports().rtp_port,
             self.session_id,
-            &self.offered_codecs,
+            self.selected_codec,
         )
     }
 
@@ -115,7 +116,7 @@ impl MediaSession {
         // Spawn RTP send task
         let send_socket = rtp_socket;
         let send_cancel = cancel_token;
-        let payload_type = self.payload_type;
+        let payload_type = self.selected_codec.payload_type;
         tokio::spawn(async move {
             Self::rtp_send_task(
                 send_socket,
@@ -350,10 +351,6 @@ mod tests {
         SdpOffer {
             peer_addr,
             peer_port: PeerPort(peer_port),
-            codecs: vec![OfferedCodec {
-                payload_type: 0,
-                kind: CodecKind::Pcmu,
-            }],
             payload_type: 0,
             codec_kind: CodecKind::Pcmu,
         }
@@ -366,10 +363,6 @@ mod tests {
         SdpOffer {
             peer_addr,
             peer_port: PeerPort(peer_port),
-            codecs: vec![OfferedCodec {
-                payload_type: 97,
-                kind: CodecKind::L16,
-            }],
             payload_type: 97,
             codec_kind: CodecKind::L16,
         }
@@ -387,39 +380,6 @@ mod tests {
         assert!(!sdp.contains("opus"));
     }
 
-    #[cfg(feature = "opus")]
-    #[tokio::test]
-    async fn test_media_session_sdp_multiple_codecs() {
-        let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
-        let peer_port = PeerPort(5000);
-        let offer = SdpOffer {
-            peer_addr,
-            peer_port,
-            codecs: vec![
-                OfferedCodec {
-                    payload_type: 111,
-                    kind: CodecKind::Opus,
-                },
-                OfferedCodec {
-                    payload_type: 0,
-                    kind: CodecKind::Pcmu,
-                },
-            ],
-            payload_type: 111,
-            codec_kind: CodecKind::Opus,
-        };
-
-        let setup = setup_test_session(&offer, Duration::MAX).await;
-
-        let sdp = setup.session.generate_sdp_answer();
-        // Should contain both offered codecs
-        assert!(sdp.contains("opus/48000"));
-        assert!(sdp.contains("PCMU/8000"));
-        // Payload types should match what was offered
-        assert!(sdp.contains("a=rtpmap:111 opus"));
-        assert!(sdp.contains("a=rtpmap:0 PCMU"));
-    }
-
     #[tokio::test]
     async fn test_media_session_sdp_l16_only() {
         let offer = l16_offer();
@@ -431,35 +391,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_media_session_sdp_multiple_codecs_with_l16() {
-        let peer_addr = PeerIpAddr("127.0.0.1".parse().unwrap());
-        let peer_port = PeerPort(5002);
-        let offer = SdpOffer {
-            peer_addr,
-            peer_port,
-            codecs: vec![
-                OfferedCodec {
-                    payload_type: 97,
-                    kind: CodecKind::L16,
-                },
-                OfferedCodec {
-                    payload_type: 0,
-                    kind: CodecKind::Pcmu,
-                },
-            ],
-            payload_type: 97,
-            codec_kind: CodecKind::L16,
-        };
-
+    async fn test_media_session_answers_only_selected_codec() {
+        // PCMA is listed first and PCMU last, but we prefer L16, so the answer
+        // names L16 alone.
+        let peer_port = 30000 + (rand::random::<u16>() % 10000);
+        let offer = crate::media::sdp::parse_sdp_offer(&format!(
+            "v=0\r\n\
+             o=- 1 1 IN IP4 127.0.0.1\r\n\
+             s=-\r\n\
+             c=IN IP4 127.0.0.1\r\n\
+             t=0 0\r\n\
+             m=audio {peer_port} RTP/AVP 8 97 0\r\n\
+             a=rtpmap:8 PCMA/8000\r\n\
+             a=rtpmap:97 L16/16000\r\n\
+             a=rtpmap:0 PCMU/8000\r\n"
+        ))
+        .unwrap();
         let setup = setup_test_session(&offer, Duration::MAX).await;
 
         let sdp = setup.session.generate_sdp_answer();
-        // Should contain both offered codecs
-        assert!(sdp.contains("L16/16000"));
-        assert!(sdp.contains("PCMU/8000"));
-        // Payload types should match what was offered
-        assert!(sdp.contains("a=rtpmap:97 L16"));
-        assert!(sdp.contains("a=rtpmap:0 PCMU"));
+        assert!(sdp.contains("RTP/AVP 97\r\n"));
+        assert!(sdp.contains("a=rtpmap:97 L16/16000"));
+        assert!(!sdp.contains("PCMU"));
+        assert!(!sdp.contains("PCMA"));
     }
 
     #[tokio::test]

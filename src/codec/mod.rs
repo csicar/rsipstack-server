@@ -49,18 +49,22 @@ impl std::error::Error for CodecInitError {}
 /// A codec only exists here if its feature is enabled, so holding a `CodecKind`
 /// means the codec is supported. Parse the name once with [`CodecKind::from_name`]
 /// and pass the kind around instead of the name.
-#[derive(EnumIter, Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The derived `Ord` follows declaration order: the earlier a variant is
+/// declared, the more this server prefers it when the peer offers several
+/// codecs (see `parse_sdp_offer`). Reordering variants changes call behaviour.
+#[derive(EnumIter, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CodecKind {
+    /// 16kHz, mono
+    L16,
+    #[cfg(feature = "opus")]
+    Opus,
+    #[cfg(feature = "g722")]
+    G722,
     /// G.711 μ-law
     Pcmu,
     /// G.711 A-law
     Pcma,
-    #[cfg(feature = "g722")]
-    G722,
-    #[cfg(feature = "opus")]
-    Opus,
-    /// 16kHz, mono
-    L16,
 }
 
 impl CodecKind {
