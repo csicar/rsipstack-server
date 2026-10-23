@@ -55,11 +55,9 @@ impl std::fmt::Display for PeerIpAddr {
 pub struct SdpOffer {
     pub peer_addr: PeerIpAddr,
     pub peer_port: PeerPort,
-    /// The offered codecs we support, in our order of preference
-    pub codecs: Vec<OfferedCodec>,
-    /// Payload type of the selected codec (the first one in `codecs`)
+    /// Payload type of the selected codec
     pub payload_type: u8,
-    /// The selected codec (the first one in `codecs`)
+    /// The selected codec: the offered one we support that we prefer most
     pub codec_kind: CodecKind,
 }
 
@@ -135,20 +133,22 @@ pub fn parse_sdp_offer(sdp_body: &str) -> Result<SdpOffer, SdpParseError> {
         }
     }
 
-    // Order by our own preference (`CodecKind` declaration order). The sort is
-    // stable, so entries of the same kind keep the peer's relative order.
-    codecs.sort_by_key(|c| c.kind);
-
-    // Select the most preferred codec we support
-    let selected = *codecs.first().ok_or(SdpParseError::NoSupportedCodec)?;
+    let selected = select_preferred(&codecs).ok_or(SdpParseError::NoSupportedCodec)?;
 
     Ok(SdpOffer {
         peer_addr,
         peer_port,
-        codecs,
         payload_type: selected.payload_type,
         codec_kind: selected.kind,
     })
+}
+
+/// Picks the codec we prefer most, by `CodecKind`'s declaration order
+///
+/// On a tie (the same kind offered under several payload types) the one the
+/// peer listed first wins. `None` if `codecs` is empty.
+fn select_preferred(codecs: &[OfferedCodec]) -> Option<OfferedCodec> {
+    codecs.iter().min_by_key(|c| c.kind).copied()
 }
 
 /// Newtype wrapper around [IpAddr] denoting this address should be used for sdp / rtp offerings.
@@ -165,41 +165,30 @@ impl std::str::FromStr for AdvertiseIpAddr {
     }
 }
 
-/// Generate an SDP answer based on the offered codecs
+/// Generate an SDP answer that names only the selected codec
 ///
-/// `offered_codecs` only holds codecs that were both offered and are supported by us
-/// (see [`parse_sdp_offer`]), so every one of them is answered.
+/// Listing several codecs would allow the peer to send any of them, but a
+/// session decodes only the codec selected in [`parse_sdp_offer`]. Answering
+/// with that one codec keeps the peer from sending anything else.
 pub fn generate_sdp_answer(
     advertise_ip_addr: AdvertiseIpAddr,
     rtp_port: u16,
     session_id: u64,
-    offered_codecs: &[OfferedCodec],
+    codec: OfferedCodec,
 ) -> String {
-    // Build payload type list for m= line
-    let pt_list: String = offered_codecs
-        .iter()
-        .map(|c| c.payload_type.to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    // Build rtpmap attributes
-    let mut rtpmap_lines = String::new();
-    for codec in offered_codecs {
-        let rtpmap = match codec.kind {
-            #[cfg(feature = "opus")]
-            CodecKind::Opus => format!(
-                "a=rtpmap:{} opus/48000/2\r\na=fmtp:{} minptime=10;useinbandfec=1\r\n",
-                codec.payload_type, codec.payload_type
-            ),
-            CodecKind::Pcmu => format!("a=rtpmap:{} PCMU/8000\r\n", codec.payload_type),
-            CodecKind::Pcma => format!("a=rtpmap:{} PCMA/8000\r\n", codec.payload_type),
-            // G.722 carries 16kHz audio but by convention advertises 8000.
-            #[cfg(feature = "g722")]
-            CodecKind::G722 => format!("a=rtpmap:{} G722/8000\r\n", codec.payload_type),
-            CodecKind::L16 => format!("a=rtpmap:{} L16/16000\r\n", codec.payload_type),
-        };
-        rtpmap_lines.push_str(&rtpmap);
-    }
+    let rtpmap_lines = match codec.kind {
+        #[cfg(feature = "opus")]
+        CodecKind::Opus => format!(
+            "a=rtpmap:{} opus/48000/2\r\na=fmtp:{} minptime=10;useinbandfec=1\r\n",
+            codec.payload_type, codec.payload_type
+        ),
+        CodecKind::Pcmu => format!("a=rtpmap:{} PCMU/8000\r\n", codec.payload_type),
+        CodecKind::Pcma => format!("a=rtpmap:{} PCMA/8000\r\n", codec.payload_type),
+        // G.722 carries 16kHz audio but by convention advertises 8000.
+        #[cfg(feature = "g722")]
+        CodecKind::G722 => format!("a=rtpmap:{} G722/8000\r\n", codec.payload_type),
+        CodecKind::L16 => format!("a=rtpmap:{} L16/16000\r\n", codec.payload_type),
+    };
 
     format!(
         "v=0\r\n\
@@ -214,7 +203,7 @@ pub fn generate_sdp_answer(
         advertise_ip_addr.0,
         advertise_ip_addr.0,
         rtp_port,
-        pt_list,
+        codec.payload_type,
         rtpmap_lines,
         EXPECTED_SEND_INTERVAL.duration().as_millis()
     )
@@ -269,59 +258,35 @@ mod tests {
         assert_eq!(offer.peer_port.0, 5000);
         assert_eq!(offer.payload_type, 0);
         assert_eq!(offer.codec_kind, CodecKind::Pcmu);
-        // Should have both codecs
-        assert_eq!(offer.codecs.len(), 2);
-        assert_eq!(
-            offer.codecs,
-            vec![
-                OfferedCodec {
-                    payload_type: 0,
-                    kind: CodecKind::Pcmu
-                },
-                OfferedCodec {
-                    payload_type: 8,
-                    kind: CodecKind::Pcma
-                },
-            ]
-        );
     }
 
     #[cfg(feature = "opus")]
     #[test]
-    fn test_generate_sdp_answer_all_codecs() {
+    fn test_generate_sdp_answer_names_only_selected_codec() {
         let ip: AdvertiseIpAddr = AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        let offered = vec![
-            OfferedCodec {
-                payload_type: 111,
-                kind: CodecKind::Opus,
-            },
-            OfferedCodec {
-                payload_type: 0,
-                kind: CodecKind::Pcmu,
-            },
-            OfferedCodec {
-                payload_type: 8,
-                kind: CodecKind::Pcma,
-            },
-        ];
-        let sdp = generate_sdp_answer(ip, 6000, 123456, &offered);
+        let selected = OfferedCodec {
+            payload_type: 111,
+            kind: CodecKind::Opus,
+        };
+        let sdp = generate_sdp_answer(ip, 6000, 123456, selected);
 
         assert!(sdp.contains("c=IN IP4 192.168.1.1"));
-        assert!(sdp.contains("m=audio 6000 RTP/AVP 111 0 8"));
+        assert!(sdp.contains("m=audio 6000 RTP/AVP 111\r\n"));
         assert!(sdp.contains("a=rtpmap:111 opus/48000/2"));
         assert!(sdp.contains("a=fmtp:111 minptime=10;useinbandfec=1"));
-        assert!(sdp.contains("a=rtpmap:0 PCMU/8000"));
-        assert!(sdp.contains("a=rtpmap:8 PCMA/8000"));
+        // Only the selected codec is answered
+        assert!(!sdp.contains("PCMU"));
+        assert!(!sdp.contains("PCMA"));
     }
 
     #[test]
     fn test_generate_sdp_answer_pcmu_only() {
         let ip: AdvertiseIpAddr = AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        let offered = vec![OfferedCodec {
+        let selected = OfferedCodec {
             payload_type: 0,
             kind: CodecKind::Pcmu,
-        }];
-        let sdp = generate_sdp_answer(ip, 6000, 123456, &offered);
+        };
+        let sdp = generate_sdp_answer(ip, 6000, 123456, selected);
 
         assert!(sdp.contains("m=audio 6000 RTP/AVP 0\r\n"));
         assert!(sdp.contains("a=rtpmap:0 PCMU/8000"));
@@ -345,14 +310,14 @@ mod tests {
              a=rtpmap:0 PCMU/8000\r\n",
         )
         .unwrap();
-        assert_eq!(
-            offer.codecs,
-            vec![OfferedCodec {
-                payload_type: 0,
-                kind: CodecKind::Pcmu
-            }]
-        );
-        let sdp = generate_sdp_answer(ip, 6000, 123456, &offer.codecs);
+        // G729 is dropped, so PCMU is the selected codec
+        assert_eq!(offer.payload_type, 0);
+        assert_eq!(offer.codec_kind, CodecKind::Pcmu);
+        let selected = OfferedCodec {
+            payload_type: offer.payload_type,
+            kind: offer.codec_kind,
+        };
+        let sdp = generate_sdp_answer(ip, 6000, 123456, selected);
 
         // Should only contain PCMU, not G729
         assert!(sdp.contains("m=audio 6000 RTP/AVP 0\r\n"));
@@ -437,8 +402,6 @@ mod tests {
         let offer = parse_sdp_offer(sdp).unwrap();
 
         // The mismatched-rate rtpmap must not be accepted as a real match.
-        assert!(!offer.codecs.iter().any(|c| c.payload_type == 97));
-
         // With L16/8000 rejected, PCMU (which we do support) must be selected.
         assert_eq!(offer.payload_type, 0);
         assert_eq!(offer.codec_kind, CodecKind::Pcmu);
@@ -475,28 +438,6 @@ mod tests {
         // Should select opus (PT 115) as it's first and we support it
         assert_eq!(offer.payload_type, 115);
         assert_eq!(offer.codec_kind, CodecKind::Opus);
-        // telephone-event (103, 101) is dropped; G.722 only exists with its feature
-        let mut expected = vec![OfferedCodec {
-            payload_type: 115,
-            kind: CodecKind::Opus,
-        }];
-        #[cfg(feature = "g722")]
-        expected.push(OfferedCodec {
-            payload_type: 9,
-            kind: CodecKind::G722,
-        });
-        // Sorted by our preference, not the peer's: PCMU ranks ahead of PCMA
-        expected.extend([
-            OfferedCodec {
-                payload_type: 0,
-                kind: CodecKind::Pcmu,
-            },
-            OfferedCodec {
-                payload_type: 8,
-                kind: CodecKind::Pcma,
-            },
-        ]);
-        assert_eq!(offer.codecs, expected);
     }
 
     #[test]
@@ -516,7 +457,45 @@ mod tests {
         let offer = parse_sdp_offer(sdp).unwrap();
         assert_eq!(offer.payload_type, 97);
         assert_eq!(offer.codec_kind, CodecKind::L16);
-        assert_eq!(offer.codecs.first().map(|c| c.payload_type), Some(97));
+    }
+
+    fn offered(payload_type: u8, kind: CodecKind) -> OfferedCodec {
+        OfferedCodec { payload_type, kind }
+    }
+
+    #[test]
+    fn test_select_preferred_ignores_peer_order() {
+        // PCMA is listed first, but PCMU ranks ahead of it
+        let codecs = [offered(8, CodecKind::Pcma), offered(0, CodecKind::Pcmu)];
+        assert_eq!(select_preferred(&codecs), Some(offered(0, CodecKind::Pcmu)));
+    }
+
+    #[test]
+    fn test_select_preferred_l16_beats_everything() {
+        let mut codecs = vec![
+            offered(8, CodecKind::Pcma),
+            offered(0, CodecKind::Pcmu),
+            offered(97, CodecKind::L16),
+        ];
+        #[cfg(feature = "g722")]
+        codecs.push(offered(9, CodecKind::G722));
+        #[cfg(feature = "opus")]
+        codecs.insert(0, offered(111, CodecKind::Opus));
+        assert_eq!(select_preferred(&codecs), Some(offered(97, CodecKind::L16)));
+    }
+
+    #[test]
+    fn test_select_preferred_same_kind_keeps_peer_order() {
+        let codecs = [offered(96, CodecKind::Pcmu), offered(0, CodecKind::Pcmu)];
+        assert_eq!(
+            select_preferred(&codecs),
+            Some(offered(96, CodecKind::Pcmu))
+        );
+    }
+
+    #[test]
+    fn test_select_preferred_empty_is_none() {
+        assert_eq!(select_preferred(&[]), None);
     }
 
     #[cfg(feature = "g722")]
@@ -542,15 +521,15 @@ mod tests {
     #[cfg(feature = "g722")]
     #[test]
     fn test_generate_answer_includes_g722() {
-        let offered = vec![OfferedCodec {
+        let selected = OfferedCodec {
             payload_type: 9,
             kind: CodecKind::G722,
-        }];
+        };
         let answer = generate_sdp_answer(
             AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
             10000,
             42,
-            &offered,
+            selected,
         );
         assert!(
             answer.contains("a=rtpmap:9 G722/8000\r\n"),
@@ -585,15 +564,15 @@ mod tests {
 
     #[test]
     fn test_generate_answer_includes_l16() {
-        let offered = vec![OfferedCodec {
+        let selected = OfferedCodec {
             payload_type: 97,
             kind: CodecKind::L16,
-        }];
+        };
         let answer = generate_sdp_answer(
             AdvertiseIpAddr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
             10000,
             42,
-            &offered,
+            selected,
         );
         assert!(
             answer.contains("a=rtpmap:97 L16/16000\r\n"),
