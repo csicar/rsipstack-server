@@ -8,7 +8,7 @@ use crate::media::PeerSocketAddr;
 use crate::metrics;
 use crate::metrics::{RejectReason, ScopedGauge};
 use crate::server::ServerState;
-use rsipstack::dialog::server_dialog::ServerInviteDialog;
+use rsipstack::dialog::invite_dialog::InviteDialog;
 use rsipstack::sip as rsip;
 use rsipstack::Result;
 use std::sync::Arc;
@@ -17,13 +17,13 @@ use tracing::{debug, error, info, warn};
 /// Handles an incoming call
 pub struct CallHandler<H: AudioHandler> {
     state: Arc<ServerState>,
-    dialog: ServerInviteDialog,
+    dialog: InviteDialog,
     audio_handler: H,
 }
 
 impl<H: AudioHandler + 'static> CallHandler<H> {
     /// Create a new call handler
-    pub fn new(state: Arc<ServerState>, dialog: ServerInviteDialog, audio_handler: H) -> Self {
+    pub fn new(state: Arc<ServerState>, dialog: InviteDialog, audio_handler: H) -> Self {
         Self {
             state,
             dialog,
